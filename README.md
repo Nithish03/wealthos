@@ -114,11 +114,15 @@ SQLite needs — most other free tiers wipe files on restart).
    python3.11 -m venv venv        # use python3.10 if 3.11 is unavailable
    venv/bin/pip install --no-cache-dir -r requirements.txt
    ```
-3. Create the website (ASGI — replace USERNAME with your PythonAnywhere username):
+3. Create an API token: **Account → API Token → Create a new API token**
+   (one click — the console picks it up automatically). Then install the
+   PythonAnywhere CLI and create the website (replace USERNAME, 3 places):
    ```bash
+   pip3 install --user --upgrade pythonanywhere
    pa website create --domain USERNAME.pythonanywhere.com \
      --command '/home/USERNAME/wealthos/backend/venv/bin/uvicorn --app-dir /home/USERNAME/wealthos/backend --uds $DOMAIN_SOCKET main:app'
    ```
+   If `pa` is "command not found", call it as `~/.local/bin/pa` instead.
 4. Open `https://USERNAME.pythonanywhere.com` on your phone and set a **6-digit PIN**
    (not 4 — this URL is on the public internet).
 5. Add it to your phone's home screen. Done.
