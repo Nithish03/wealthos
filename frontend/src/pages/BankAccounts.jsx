@@ -362,7 +362,7 @@ export default function BankAccounts() {
   const emMonths = summary?.emergency_months || 0
 
   return (
-    <div style={{padding:32,minHeight:'100vh'}}>
+    <div className="page">
       {/* Page Header */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24}}>
         <div>
@@ -374,7 +374,7 @@ export default function BankAccounts() {
 
       {/* Summary Cards */}
       {summary && (
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:16,marginBottom:28}}>
+        <div className="grid-4" style={{marginBottom:28}}>
           <div className="stat-card">
             <div className="stat-label">Total Balance</div>
             <div className="stat-value">{fmt(summary.total_balance)}</div>

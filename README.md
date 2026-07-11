@@ -82,6 +82,24 @@ Then open **http://localhost:3000** in your browser.
 
 > On first launch, you'll be asked to set a 4–6 digit PIN.
 
+### 📱 Use from your phone
+
+```bash
+./start.sh
+```
+
+This builds the frontend and serves **everything from one port** — the script
+prints your machine's address (e.g. `http://192.168.1.5:8000`). Open it on
+your phone's browser (same Wi-Fi) and add it to your home screen.
+
+To use it away from home, install [Tailscale](https://tailscale.com) (free)
+on this machine and your phone — then the same URL works from anywhere over a
+private encrypted network, with nothing exposed to the internet.
+
+Login is rate-limited (5 wrong PINs → 5-minute lockout) and every data
+endpoint requires the session token, so LAN/Tailscale exposure is safe.
+Do **not** port-forward this to the public internet.
+
 ---
 
 ## 🗂️ Project Structure
@@ -127,7 +145,7 @@ finance-tracker/
 - All data stored in **SQLite at `backend/finance_tracker.db`**
 - No telemetry; the only external calls are optional Yahoo Finance price refreshes
 - Signed session token (30-day expiry) stored in `localStorage`; every data API requires it
-- To change PIN: Settings → Change PIN (or call `POST /auth/change-pin`)
+- To change PIN: Settings → Change PIN (or call `POST /api/auth/change-pin`)
 - Forgot your PIN? Clear it locally: `sqlite3 backend/finance_tracker.db "DELETE FROM users;"` then set a new one
 
 ---

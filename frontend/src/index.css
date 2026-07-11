@@ -216,6 +216,15 @@ tbody tr:last-child td { border-bottom: none; }
 .flex-center  { display: flex; align-items: center; justify-content: center; }
 .flex-gap-8   { display: flex; align-items: center; gap: 8px; }
 .page  { padding: 32px; min-height: 100vh; }
+.page-split { display: grid; grid-template-columns: 1fr 220px; gap: 16px; align-items: start; }
+@media (max-width: 768px) {
+  .page   { padding: 16px; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .page-split { grid-template-columns: 1fr; }
+  .modal  { padding: 20px; border-radius: 16px; }
+}
 .page-header { margin-bottom: 24px; }
 .section-title { font-family: 'Syne', sans-serif; font-size: 24px; font-weight: 700; color: var(--t1); }
 .section-sub   { font-size: 13px; color: var(--t2); margin-top: 4px; }

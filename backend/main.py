@@ -61,21 +61,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(investments.router)
-app.include_router(credit_cards.router)
-app.include_router(bank_accounts.router)
-app.include_router(dashboard.router)
-app.include_router(suggestions.router)
-app.include_router(export.router)
-app.include_router(pdf_import.router)
-app.include_router(categories.router)
+# All API routes live under /api. In dev, Vite proxies /api → :8000 unchanged;
+# in production the same origin serves both the API and the built frontend,
+# so one port (8000) is all a phone needs.
+for r in (auth.router, investments.router, credit_cards.router, bank_accounts.router,
+          dashboard.router, suggestions.router, export.router, pdf_import.router,
+          categories.router):
+    app.include_router(r, prefix="/api")
 
-
-@app.get("/")
-def root():
-    return {"app": "WealthOS", "status": "running", "time": datetime.utcnow().isoformat()}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Serve the built frontend (single-service mode) ────────────────────────────
+# If frontend/dist exists (run ./start.sh or `npm run build`), the backend
+# serves it: open http://<machine>:8000 from any device on your network.
+FRONTEND_DIST = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist"))
+
+if os.path.isdir(FRONTEND_DIST):
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        candidate = os.path.realpath(os.path.join(FRONTEND_DIST, full_path))
+        if full_path and candidate.startswith(FRONTEND_DIST) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    @app.get("/")
+    def root():
+        return {"app": "WealthOS", "status": "running", "note": "frontend not built — run ./start.sh",
+                "time": datetime.utcnow().isoformat()}

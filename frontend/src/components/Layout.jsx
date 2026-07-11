@@ -4,12 +4,12 @@ import { exportAPI, dashboardAPI } from '../api/client'
 import toast from 'react-hot-toast'
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
-  { to: '/investments', icon: TrendingUp, label: 'Portfolio' },
-  { to: '/credit-cards', icon: CreditCard, label: 'Credit Cards' },
-  { to: '/bank-accounts', icon: Building2, label: 'Bank Accounts' },
-  { to: '/suggestions', icon: Lightbulb, label: 'AI Insights' },
-  { to: '/settings', icon: SettingsIcon, label: 'Settings' },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', short: 'Home', end: true },
+  { to: '/investments', icon: TrendingUp, label: 'Portfolio', short: 'Portfolio' },
+  { to: '/credit-cards', icon: CreditCard, label: 'Credit Cards', short: 'Cards' },
+  { to: '/bank-accounts', icon: Building2, label: 'Bank Accounts', short: 'Banks' },
+  { to: '/suggestions', icon: Lightbulb, label: 'AI Insights', short: 'Insights' },
+  { to: '/settings', icon: SettingsIcon, label: 'Settings', short: 'Settings' },
 ]
 
 export default function Layout() {
@@ -30,8 +30,23 @@ export default function Layout() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-primary">
-      <aside className="w-64 flex-shrink-0 bg-bg-secondary border-r border-bg-border flex flex-col">
+    <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-bg-primary">
+      {/* Mobile top bar */}
+      <header className="md:hidden flex items-center justify-between px-4 py-3 bg-bg-secondary border-b border-bg-border flex-shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-accent-green/10 border border-accent-green/30 flex items-center justify-center">
+            <span className="text-base">₹</span>
+          </div>
+          <span className="font-display font-bold text-base text-text-primary">WealthOS</span>
+        </div>
+        <button onClick={handleLogout} title="Lock app"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-accent-red/80 hover:text-accent-red hover:bg-accent-red/10 transition-all">
+          <LogOut size={14} />Lock
+        </button>
+      </header>
+
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex w-64 flex-shrink-0 bg-bg-secondary border-r border-bg-border flex-col">
         <div className="p-6 border-b border-bg-border">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-accent-green/10 border border-accent-green/30 flex items-center justify-center">
@@ -75,9 +90,24 @@ export default function Layout() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto pb-20 md:pb-0">
         <Outlet />
       </main>
+
+      {/* Mobile bottom tab bar */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-bg-secondary border-t border-bg-border flex justify-around px-1 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+        {navItems.map(({ to, icon: Icon, short, end }) => (
+          <NavLink key={to} to={to} end={end}
+            className={({ isActive }) =>
+              `flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg min-w-[52px] transition-all ${
+                isActive ? 'text-accent-green' : 'text-text-secondary'
+              }`
+            }>
+            <Icon size={19} />
+            <span className="text-[10px] font-medium leading-none">{short}</span>
+          </NavLink>
+        ))}
+      </nav>
     </div>
   )
 }

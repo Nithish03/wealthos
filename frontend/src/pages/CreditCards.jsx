@@ -387,7 +387,7 @@ function CardPanel({ card, onEdit, onDelete, onReload }) {
         </div>
 
         {/* Stats row */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:12}}>
+        <div className="grid-4" style={{gap:12,marginBottom:12}}>
           {[
             {label:'Total Due',    value:fmt(card.total_due),        color:'var(--red)'},
             {label:'Limit',        value:fmt(card.credit_limit),     color:'var(--t2)'},
@@ -508,7 +508,7 @@ export default function CreditCards() {
     .sort((a,b)=>b.value-a.value)
 
   return (
-    <div style={{padding:32,maxWidth:'100%',minHeight:'100vh'}}>
+    <div className="page">
       <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24}}>
         <div>
           <h1 style={{fontFamily:'Syne',fontSize:24,fontWeight:700}}>Credit Cards</h1>
@@ -539,7 +539,7 @@ export default function CreditCards() {
 
       {/* Summary row */}
       {spending && (
-        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16,marginBottom:24}}>
+        <div className="grid-3" style={{marginBottom:24}}>
           <div className="stat-card">
             <div style={{fontSize:11,fontWeight:600,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>This Month's Spend</div>
             <div style={{fontFamily:'monospace',fontSize:22,fontWeight:700}}>{fmt(spending.total_spend)}</div>

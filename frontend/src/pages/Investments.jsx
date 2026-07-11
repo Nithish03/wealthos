@@ -285,7 +285,7 @@ export default function Investments() {
   const activeClasses = [...new Set(investments.map(i=>i.asset_class))]
 
   return (
-    <div style={{padding:32,minHeight:'100vh'}}>
+    <div className="page">
       {/* Header */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24,flexWrap:'wrap',gap:12}}>
         <div>
@@ -315,7 +315,7 @@ export default function Investments() {
 
       {/* Summary stats */}
       {summary && (
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:16,marginBottom:24}}>
+        <div className="grid-4" style={{marginBottom:24}}>
           {[
             { label:'Total Invested',  value:fmt(summary.total_invested) },
             { label:'Current Value',   value:fmt(summary.total_current) },
@@ -331,7 +331,7 @@ export default function Investments() {
       )}
 
       {/* Content area */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 220px',gap:16,alignItems:'start'}}>
+      <div className="page-split">
         <div>
           {/* Filter pills */}
           <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14}}>

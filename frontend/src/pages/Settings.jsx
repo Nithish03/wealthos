@@ -34,7 +34,7 @@ export default function Settings() {
   }
 
   return (
-    <div style={{padding:32,minHeight:'100vh',maxWidth:640}}>
+    <div className="page" style={{maxWidth:640}}>
       <div style={{marginBottom:24}}>
         <h1 style={{fontFamily:'Syne',fontSize:24,fontWeight:700,color:'var(--t1)'}}>Settings</h1>
         <p style={{color:'var(--t2)',fontSize:13,marginTop:4}}>PIN, backups and snapshots</p>

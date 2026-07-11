@@ -9,8 +9,56 @@ from schemas import PINSetup, PINLogin, Token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-SECRET_KEY = b"wealthos-secret-key-2024-local"
+
+def _load_secret() -> bytes:
+    """Token-signing secret. Priority: WEALTHOS_SECRET env var, then a
+    generated backend/.secret file (git-ignored). Never hardcoded — a secret
+    in the repo would let anyone forge session tokens."""
+    env = os.environ.get("WEALTHOS_SECRET")
+    if env:
+        return env.encode()
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".secret")
+    try:
+        with open(path, "rb") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        import secrets
+        value = secrets.token_hex(32).encode()
+        with open(path, "wb") as f:
+            f.write(value)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return value
+
+
+SECRET_KEY = _load_secret()
 ACCESS_TOKEN_EXPIRE_DAYS = 30
+
+# ── Login rate limiting (single-user app → one global counter) ────────────────
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_SECONDS = 300
+_failed = {"count": 0, "locked_until": 0.0}
+
+
+def _check_lockout():
+    remaining = _failed["locked_until"] - time.time()
+    if remaining > 0:
+        raise HTTPException(status_code=429,
+                            detail=f"Too many wrong PINs. Try again in {int(remaining) + 1}s.")
+
+
+def _record_failure():
+    _failed["count"] += 1
+    if _failed["count"] >= MAX_FAILED_ATTEMPTS:
+        _failed["count"] = 0
+        _failed["locked_until"] = time.time() + LOCKOUT_SECONDS
+
+
+def _record_success():
+    _failed["count"] = 0
+    _failed["locked_until"] = 0.0
 
 
 def hash_pin(pin: str) -> str:
@@ -75,11 +123,14 @@ def setup_pin(data: PINSetup, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 def login(data: PINLogin, db: Session = Depends(get_db)):
+    _check_lockout()
     user = db.query(User).first()
     if not user:
         raise HTTPException(status_code=404, detail="No PIN set. Please set up first.")
     if not verify_pin(data.pin, user.pin_hash):
+        _record_failure()
         raise HTTPException(status_code=401, detail="Invalid PIN")
+    _record_success()
     return {"access_token": create_token(user.id), "token_type": "bearer"}
 
 

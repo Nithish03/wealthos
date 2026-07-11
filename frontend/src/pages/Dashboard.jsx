@@ -95,12 +95,12 @@ export default function Dashboard() {
   useEffect(() => { loadData() }, [])
 
   if (loading) return (
-    <div className="p-8 space-y-4">
-      <div className="grid grid-cols-4 gap-4">
+    <div className="p-4 md:p-8 space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[...Array(4)].map((_, i) => <div key={i} className="skeleton h-28 rounded-2xl" />)}
       </div>
-      <div className="grid grid-cols-3 gap-4">
-        <div className="skeleton col-span-2 h-64 rounded-2xl" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="skeleton md:col-span-2 h-64 rounded-2xl" />
         <div className="skeleton h-64 rounded-2xl" />
       </div>
     </div>
@@ -109,7 +109,7 @@ export default function Dashboard() {
   const pnlPositive = (overview?.total_pnl || 0) >= 0
 
   return (
-    <div className="p-8 space-y-6 animate-fade-in">
+    <div className="p-4 md:p-8 space-y-6 animate-fade-in">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -157,7 +157,7 @@ export default function Dashboard() {
       </div>
 
       {/* Assets vs Liabilities */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="card p-4">
           <div className="text-xs text-text-secondary uppercase tracking-wider mb-3">Balance Sheet</div>
           <div className="space-y-3">
@@ -217,9 +217,9 @@ export default function Dashboard() {
       </div>
 
       {/* Charts Row */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Net Worth Chart */}
-        <div className="col-span-2 card p-5">
+        <div className="md:col-span-2 card p-5">
           <div className="flex justify-between items-center mb-4">
             <div className="text-sm font-medium text-text-primary">Net Worth Over Time</div>
             <div className="text-xs text-text-muted">{history.length} snapshots</div>
