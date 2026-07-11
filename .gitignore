@@ -11,7 +11,8 @@ backend/.secret
 
 # Node
 frontend/node_modules/
-frontend/dist/
+# NOTE: frontend/dist IS committed — hosting providers then need no Node.js.
+# Rebuild it after UI changes: cd frontend && npm run build
 
 # Editor / OS
 .DS_Store

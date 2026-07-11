@@ -73,7 +73,8 @@ def export_excel(db: Session = Depends(get_db)):
 
 @router.get("/backup-db")
 def backup_db():
-    db_path = os.environ.get("DB_PATH", "./finance_tracker.db")
+    from database import DB_PATH
+    db_path = DB_PATH
     if not os.path.exists(db_path):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Database not found")

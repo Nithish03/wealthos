@@ -98,7 +98,38 @@ private encrypted network, with nothing exposed to the internet.
 
 Login is rate-limited (5 wrong PINs → 5-minute lockout) and every data
 endpoint requires the session token, so LAN/Tailscale exposure is safe.
-Do **not** port-forward this to the public internet.
+Do **not** port-forward your home machine to the public internet — if you
+want internet access, use the hosted setup below instead.
+
+## ☁️ Host it free (PythonAnywhere)
+
+Free forever, no card, HTTPS, always on, and a **persistent disk** (which
+SQLite needs — most other free tiers wipe files on restart).
+
+1. Sign up at [pythonanywhere.com](https://www.pythonanywhere.com) (free "Beginner" plan).
+2. Open **Consoles → Bash** and clone the repo:
+   ```bash
+   git clone https://github.com/Nithish03/wealthos.git
+   cd wealthos/backend
+   python3.11 -m venv venv        # use python3.10 if 3.11 is unavailable
+   venv/bin/pip install --no-cache-dir -r requirements.txt
+   ```
+3. Create the website (ASGI — replace USERNAME with your PythonAnywhere username):
+   ```bash
+   pa website create --domain USERNAME.pythonanywhere.com \
+     --command '/home/USERNAME/wealthos/backend/venv/bin/uvicorn --app-dir /home/USERNAME/wealthos/backend --uds $DOMAIN_SOCKET main:app'
+   ```
+4. Open `https://USERNAME.pythonanywhere.com` on your phone and set a **6-digit PIN**
+   (not 4 — this URL is on the public internet).
+5. Add it to your phone's home screen. Done.
+
+To update later: `cd ~/wealthos && git pull && pa website reload --domain USERNAME.pythonanywhere.com`
+
+**Hosted-mode notes**
+- The built frontend is committed in `frontend/dist`, so the server needs no Node.js.
+- Use a unique 6-digit PIN — never a real ATM/bank PIN. Login locks for 5 minutes after 5 wrong attempts.
+- Your data sits on the host's disk. Download **Settings → Backup Database** regularly.
+- The free tier's outbound internet is whitelist-only, so the Yahoo Finance "Live Prices" button may not work there; everything else is self-contained.
 
 ---
 
