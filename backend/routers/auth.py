@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+from typing import Optional
 import sys, os, hashlib, hmac, base64, json, time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
@@ -40,6 +41,16 @@ def verify_token(token: str) -> bool:
         return payload["exp"] > time.time()
     except Exception:
         return False
+
+
+def require_auth(authorization: Optional[str] = Header(None)):
+    """Dependency that gates every data router behind a valid bearer token."""
+    if (
+        not authorization
+        or not authorization.lower().startswith("bearer ")
+        or not verify_token(authorization.split(" ", 1)[1].strip())
+    ):
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 @router.get("/status")
@@ -84,11 +95,13 @@ def change_pin(data: PINSetup, db: Session = Depends(get_db)):
     return {"access_token": create_token(user.id), "token_type": "bearer"}
 
 
-@router.delete("/reset")
+@router.delete("/reset", dependencies=[Depends(require_auth)])
 def reset_pin(db: Session = Depends(get_db)):
     """
-    Emergency reset — deletes stored PIN so you can set a new one.
-    Only works locally. Call: DELETE http://localhost:8000/auth/reset
+    Reset PIN (requires a valid session token — otherwise anyone on the
+    network could hijack the data by resetting the PIN and setting their own).
+    Forgot the PIN entirely? Clear it straight from the local database:
+    sqlite3 finance_tracker.db "DELETE FROM users;"
     """
     users = db.query(User).all()
     for u in users:

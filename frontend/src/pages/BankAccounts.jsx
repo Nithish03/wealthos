@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { bankAccountsAPI, pdfImportAPI } from '../api/client'
+import { bankAccountsAPI, pdfImportAPI, withFilePassword, apiErrMsg } from '../api/client'
+import CategoryTrainer from '../components/CategoryTrainer'
 import toast from 'react-hot-toast'
 
 const fmt  = (n) => `₹${Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0})}`
@@ -116,6 +117,7 @@ function ImportModal({ acc, onClose, onDone }) {
   const [file, setFile]       = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState(null)
+  const [trainItems, setTrainItems] = useState(null)
   const fileRef = useRef()
 
   const handleImport = async () => {
@@ -123,13 +125,14 @@ function ImportModal({ acc, onClose, onDone }) {
     setLoading(true)
     try {
       const isPDF = file.name.toLowerCase().endsWith('.pdf')
-      const res = isPDF
-        ? await pdfImportAPI.bankStatement(acc.id, file)
-        : await bankAccountsAPI.importStatement(acc.id, file)
+      const res = await withFilePassword(pw => isPDF
+        ? pdfImportAPI.bankStatement(acc.id, file, pw)
+        : bankAccountsAPI.importStatement(acc.id, file, pw))
       setResult(res.data)
       toast.success(res.data.message)
+      if (res.data.uncategorized?.length) setTrainItems(res.data.uncategorized)
     } catch(e) {
-      toast.error(e.response?.data?.detail || 'Import failed — check format')
+      toast.error(apiErrMsg(e, 'Import failed — check format'))
     } finally { setLoading(false) }
   }
 
@@ -212,6 +215,9 @@ function ImportModal({ acc, onClose, onDone }) {
           </div>
         </div>
       </div>
+      {trainItems && (
+        <CategoryTrainer items={trainItems} onClose={()=>setTrainItems(null)} onSaved={onDone} />
+      )}
     </div>
   )
 }

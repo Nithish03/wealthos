@@ -7,7 +7,9 @@ from database import get_db
 from models import Investment, CreditCard, BankAccount, NetWorthSnapshot
 from datetime import datetime
 
-router = APIRouter(prefix="/export", tags=["export"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/export", tags=["export"], dependencies=[Depends(require_auth)])
 
 
 @router.get("/excel")

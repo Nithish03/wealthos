@@ -12,7 +12,7 @@ import models
 Base.metadata.create_all(bind=engine)
 
 # Import routers (BankTransaction table is created inside bank_accounts router)
-from routers import auth, investments, credit_cards, bank_accounts, dashboard, suggestions, export, pdf_import
+from routers import auth, investments, credit_cards, bank_accounts, dashboard, suggestions, export, pdf_import, categories
 
 # Now create bank_transactions table too
 from routers.bank_accounts import BankTransaction
@@ -69,6 +69,7 @@ app.include_router(dashboard.router)
 app.include_router(suggestions.router)
 app.include_router(export.router)
 app.include_router(pdf_import.router)
+app.include_router(categories.router)
 
 
 @app.get("/")

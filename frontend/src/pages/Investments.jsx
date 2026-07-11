@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { investmentsAPI, pdfImportAPI } from '../api/client'
+import { investmentsAPI, pdfImportAPI, withFilePassword, apiErrMsg } from '../api/client'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import toast from 'react-hot-toast'
 
@@ -138,12 +138,12 @@ function ImportModal({ onClose, onDone }) {
     if (!file) return toast.error('Select a file first')
     setLoading(true)
     try {
-      const res = await investmentsAPI.importXLSX(broker, file)
+      const res = await withFilePassword(pw => investmentsAPI.importXLSX(broker, file, pw))
       setResult(res.data)
       toast.success(res.data.message)
       onDone()   // auto-refresh parent list
     } catch(e) {
-      toast.error(e.response?.data?.detail || 'Import failed')
+      toast.error(apiErrMsg(e, 'Import failed'))
     } finally { setLoading(false) }
   }
 
@@ -220,9 +220,10 @@ function ImportModal({ onClose, onDone }) {
                 <input type="file" accept=".pdf" style={{display:'none'}} onChange={async e=>{
                   const f=e.target.files[0]; if(!f) return
                   try {
-                    const res = await (k==='alpaca' ? pdfImportAPI.alpaca(f) : pdfImportAPI.aura(f))
+                    const res = await withFilePassword(pw =>
+                      k==='alpaca' ? pdfImportAPI.alpaca(f, pw) : pdfImportAPI.aura(f, pw))
                     toast.success(res.data.message); onDone()
-                  } catch(err) { toast.error(err.response?.data?.detail||'Import failed') }
+                  } catch(err) { toast.error(apiErrMsg(err, 'Import failed')) }
                   e.target.value=''
                 }}/>
                 <div style={{background:'var(--bg1)',border:'1.5px solid var(--bd)',borderRadius:10,

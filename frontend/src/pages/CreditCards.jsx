@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { creditCardsAPI, pdfImportAPI } from '../api/client'
+import { creditCardsAPI, pdfImportAPI, withFilePassword, apiErrMsg } from '../api/client'
+import CategoryTrainer from '../components/CategoryTrainer'
 import { AlertTriangle } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import toast from 'react-hot-toast'
@@ -100,17 +101,23 @@ function AddFromStatementModal({ onClose, onCardCreated }) {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [parsed, setParsed] = useState(null)
+  const [pdfPassword, setPdfPassword] = useState(null)
   const fileRef = useRef()
 
   const handleParse = async () => {
     if (!file) return toast.error('Select a PDF file')
     setLoading(true)
     try {
-      const res = await pdfImportAPI.creditCardPreview(file)
+      let usedPassword = null
+      const res = await withFilePassword(pw => {
+        usedPassword = pw
+        return pdfImportAPI.creditCardPreview(file, pw)
+      })
+      setPdfPassword(usedPassword)
       setParsed(res.data)
       setStep('preview')
     } catch(e) {
-      toast.error(e.response?.data?.detail || 'Could not parse PDF — try manual entry')
+      toast.error(apiErrMsg(e, 'Could not parse PDF — try manual entry'))
     } finally { setLoading(false) }
   }
 
@@ -171,7 +178,7 @@ function AddFromStatementModal({ onClose, onCardCreated }) {
         _parsed={parsed}
         onClose={onClose}
         onSave={async (newCardId) => {
-          onCardCreated(newCardId, file)
+          onCardCreated(newCardId, file, pdfPassword)
           onClose()
         }}
       />
@@ -225,6 +232,7 @@ function ImportModal({ card, onClose, onDone }) {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
+  const [trainItems, setTrainItems] = useState(null)
   const fileRef = useRef()
 
   const handleImport = async () => {
@@ -232,14 +240,15 @@ function ImportModal({ card, onClose, onDone }) {
     setLoading(true)
     try {
       const isPDF = file.name.toLowerCase().endsWith('.pdf')
-      const res = isPDF
-        ? await pdfImportAPI.creditCard(card.id, file)
-        : await creditCardsAPI.importStatement(card.id, file)
+      const res = await withFilePassword(pw => isPDF
+        ? pdfImportAPI.creditCard(card.id, file, pw)
+        : creditCardsAPI.importStatement(card.id, file, pw))
       setResult(res.data)
       toast.success(res.data.message)
+      if (res.data.uncategorized?.length) setTrainItems(res.data.uncategorized)
       onDone()  // auto-refresh parent
     } catch(e) {
-      toast.error(e.response?.data?.detail || 'Import failed — check the file format')
+      toast.error(apiErrMsg(e, 'Import failed — check the file format'))
     } finally { setLoading(false) }
   }
 
@@ -324,6 +333,9 @@ function ImportModal({ card, onClose, onDone }) {
           </div>
         </div>
       </div>
+      {trainItems && (
+        <CategoryTrainer items={trainItems} onClose={()=>setTrainItems(null)} onSaved={onDone} />
+      )}
     </div>
   )
 }
@@ -470,6 +482,7 @@ export default function CreditCards() {
   const [spending, setSpending] = useState(null)
   const [modal, setModal] = useState(null)
   const [fromStatement, setFromStatement] = useState(false)
+  const [trainItems, setTrainItems] = useState(null)
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -586,16 +599,23 @@ export default function CreditCards() {
       {fromStatement && (
         <AddFromStatementModal
           onClose={()=>setFromStatement(false)}
-          onCardCreated={(newCardId, file) => {
+          onCardCreated={(newCardId, file, pdfPassword) => {
             load()
             // Also import transactions into the new card
             if (newCardId && file) {
-              pdfImportAPI.creditCard(newCardId, file)
-                .then(()=>{ toast.success('Transactions imported!'); load() })
+              pdfImportAPI.creditCard(newCardId, file, pdfPassword)
+                .then((res)=>{
+                  toast.success('Transactions imported!')
+                  if (res.data.uncategorized?.length) setTrainItems(res.data.uncategorized)
+                  load()
+                })
                 .catch(()=>{})
             }
           }}
         />
+      )}
+      {trainItems && (
+        <CategoryTrainer items={trainItems} onClose={()=>setTrainItems(null)} onSaved={load} />
       )}
     </div>
   )

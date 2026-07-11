@@ -45,17 +45,22 @@ Detection logic: text keyword scan on first 2 pages.
   CSB    → "csb bank" or ("jupiter" + "edge")
 """
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
+from typing import Optional
 import sys, os, io, re
 from datetime import datetime, date
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import BankAccount, CreditCard, CreditCardTransaction, Investment
+from file_utils import decrypt_pdf_if_needed
+from categorizer import load_rules, apply_rules, uncategorized_descriptions
 from routers.bank_accounts import BankTransaction, guess_category
 
-router = APIRouter(prefix="/pdf-import", tags=["pdf_import"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/pdf-import", tags=["pdf_import"], dependencies=[Depends(require_auth)])
 
 
 # ── CORE UTILITIES ─────────────────────────────────────────────────────────────
@@ -262,19 +267,106 @@ def parse_canara(content: bytes) -> dict:
     return {"txns": txns, "closing": closing, "bank": "Canara Bank"}
 
 
+def parse_generic_bank(content: bytes) -> dict:
+    """
+    Format-agnostic fallback: scan raw text lines for
+      DATE  DESCRIPTION  AMOUNT  BALANCE [Dr|Cr]
+    Debit/credit direction comes from (in priority order) the Dr/Cr marker,
+    the running-balance delta, or credit-keyword hints in the description.
+    Used only when every bank-specific parser produced zero transactions.
+    """
+    GENERIC_TXN = re.compile(
+        r'^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}[\s-][A-Za-z]{3,9}[\s-]\d{2,4})'  # date
+        r'\s+(.*?)\s+'                                                             # description
+        r'(-?[\d,]+\.\d{2})\s+'                                                    # amount
+        r'(-?[\d,]+\.\d{2})'                                                       # closing balance
+        r'\s*(Dr|Cr)?\s*$', re.IGNORECASE)
+    CREDIT_HINTS = ('salary', 'neft cr', 'imps cr', 'received', 'refund',
+                    'cashback', 'interest', 'credited', 'deposit', 'reversal')
+
+    txns = []
+    closing = 0.0
+    prev_bal = None
+    full_text = pdf_full_text(content)
+    m = re.search(r'Opening Balance[^\d]*([\d,]+\.\d{2})', full_text, re.IGNORECASE)
+    if m:
+        prev_bal = safe_float(m.group(1))
+
+    for line in full_text.split('\n'):
+        m = GENERIC_TXN.match(line.strip())
+        if not m:
+            continue
+        date_str, desc, amt_raw, bal_raw, dr_cr = m.groups()
+        amount = abs(safe_float(amt_raw))
+        balance = safe_float(bal_raw)
+        if amount == 0:
+            continue
+        if dr_cr:
+            is_credit = dr_cr.lower() == 'cr'
+        elif prev_bal is not None:
+            is_credit = balance > prev_bal
+        else:
+            is_credit = any(k in desc.lower() for k in CREDIT_HINTS)
+        prev_bal = balance
+        closing = balance
+        txns.append({
+            "transaction_date": parse_date_str(date_str),
+            "description": desc[:200],
+            "debit_amount": 0.0 if is_credit else amount,
+            "credit_amount": amount if is_credit else 0.0,
+            "balance": balance,
+            "category": guess_category(desc),
+            "reference": "",
+        })
+    return {"txns": txns, "closing": closing, "bank": "Bank statement (generic parser)"}
+
+
+BANK_PARSERS = [
+    (("digibank", "dbss0in", "dbs bank"), parse_dbs),
+    (("federal bank", "fdrl0007777"), parse_federal),
+    (("equitas", "esfb000"), parse_equitas),
+    (("canara", "cnrb000", "syndicate"), parse_canara),
+]
+
+
 def detect_and_parse_bank(content: bytes) -> dict:
-    import pdfplumber
+    """
+    Evidence-based detection instead of blind keyword routing:
+    1. Run the parser whose keywords match — trust it only if it finds rows.
+    2. Otherwise run every bank parser and keep the one extracting the most
+       transactions (a wrong-keyword match can no longer return silent zeros).
+    3. Final fallback: the generic text-line parser.
+    """
     with get_pdf_pages(content) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages[:2]).lower()
-    if "digibank" in text or "dbss0in" in text or "dbs bank" in text:
-        return parse_dbs(content)
-    if "federal bank" in text or "fdrl0007777" in text:
-        return parse_federal(content)
-    if "equitas" in text or "esfb000" in text:
-        return parse_equitas(content)
-    if "canara" in text or "cnrb000" in text or "syndicate" in text:
-        return parse_canara(content)
-    return parse_federal(content)
+
+    detected = next((fn for kws, fn in BANK_PARSERS if any(k in text for k in kws)), None)
+    if detected:
+        try:
+            result = detected(content)
+            if result["txns"]:
+                return result
+        except Exception:
+            pass
+
+    best = None
+    for _, fn in BANK_PARSERS:
+        if fn is detected:
+            continue
+        try:
+            r = fn(content)
+        except Exception:
+            continue
+        if best is None or len(r["txns"]) > len(best["txns"]):
+            best = r
+    if best and best["txns"]:
+        best["bank"] += " (auto-detected)"
+        return best
+
+    generic = parse_generic_bank(content)
+    if generic["txns"]:
+        return generic
+    return generic
 
 
 # ── CREDIT CARD PARSERS ────────────────────────────────────────────────────────
@@ -665,16 +757,79 @@ def guess_cc_cat(desc: str) -> str:
     return 'Other'
 
 
+def parse_generic_cc(content: bytes) -> dict:
+    """
+    Format-agnostic CC fallback: scan text lines for
+      DATE  DESCRIPTION  [Rs./₹/C] AMOUNT [Dr|Cr]
+    Credit direction from the Cr marker or payment/cashback keywords.
+    Summary fields stay empty — transactions still import.
+    """
+    GENERIC_TXN = re.compile(
+        r'^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}[\s-][A-Za-z]{3,9}[\s-]\d{4})'
+        r'\s+(.+?)\s+'
+        r'(?:Rs\.?\s*|₹\s*|C\s*)?(-?[\d,]+\.\d{2})\s*(Dr|Cr)?\s*$', re.IGNORECASE)
+    CREDIT_HINTS = ('payment', 'repayment', 'cashback', 'refund', 'reversal', 'waiver', 'credit')
+
+    txns = []
+    summary = _empty_cc_summary()
+    for line in pdf_full_text(content).split('\n'):
+        m = GENERIC_TXN.match(line.strip())
+        if not m:
+            continue
+        date_str, desc, amt_raw, dr_cr = m.groups()
+        amount = abs(safe_float(amt_raw))
+        if amount == 0:
+            continue
+        is_credit = (dr_cr or '').lower() == 'cr' or any(k in desc.lower() for k in CREDIT_HINTS)
+        txns.append({
+            "transaction_date": parse_date_str(date_str),
+            "description": desc[:200], "amount": amount,
+            "transaction_type": "credit" if is_credit else "debit",
+            "category": guess_cc_cat(desc),
+        })
+    return {"txns": txns, **summary, "bank": "Credit card (generic parser)"}
+
+
+CC_PARSERS = [
+    (("hdfc bank", "hdfcbank"), parse_hdfc_cc),
+    (("axis bank",), parse_axis_cc),
+    (("csb bank",), parse_csb_cc),
+]
+
+
 def detect_and_parse_cc(content: bytes) -> dict:
+    """Same evidence-based strategy as detect_and_parse_bank: keyword match
+    first, but only trusted when it yields transactions; then best-of-all
+    parsers; then the generic text-line fallback."""
     with get_pdf_pages(content) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages[:2]).lower()
-    if 'hdfc bank' in text or 'hdfcbank' in text:
-        return parse_hdfc_cc(content)
-    if 'axis bank' in text:
-        return parse_axis_cc(content)
-    if 'csb bank' in text or ('jupiter' in text and 'edge' in text):
-        return parse_csb_cc(content)
-    return parse_hdfc_cc(content)
+
+    detected = next((fn for kws, fn in CC_PARSERS if any(k in text for k in kws)), None)
+    if detected is None and 'jupiter' in text and 'edge' in text:
+        detected = parse_csb_cc
+    if detected:
+        try:
+            result = detected(content)
+            if result["txns"]:
+                return result
+        except Exception:
+            pass
+
+    best = None
+    for _, fn in CC_PARSERS:
+        if fn is detected:
+            continue
+        try:
+            r = fn(content)
+        except Exception:
+            continue
+        if best is None or len(r["txns"]) > len(best["txns"]):
+            best = r
+    if best and best["txns"]:
+        best["bank"] += " (auto-detected)"
+        return best
+
+    return parse_generic_cc(content)
 
 
 # ── INVESTMENT PARSERS ─────────────────────────────────────────────────────────
@@ -728,16 +883,21 @@ def parse_aura(content: bytes) -> list:
 # ── ENDPOINTS ──────────────────────────────────────────────────────────────────
 
 @router.post("/bank/{acc_id}")
-async def import_bank_pdf(acc_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_bank_pdf(acc_id: int, file: UploadFile = File(...),
+                          password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     acc = db.query(BankAccount).filter(BankAccount.id == acc_id).first()
     if not acc:
         raise HTTPException(404, "Account not found")
     content = await file.read()
+    content = decrypt_pdf_if_needed(content, password)
     try:
         result = detect_and_parse_bank(content)
         txns = result["txns"]
         if not txns:
             raise HTTPException(400, f"No transactions found. Detected format: {result['bank']}")
+        rules = load_rules(db)
+        for t in txns:
+            t["category"] = apply_rules(t["description"], t["category"], rules)
         db.query(BankTransaction).filter(BankTransaction.account_id == acc_id).delete()
         total_d = total_c = 0.0
         for t in txns:
@@ -760,6 +920,7 @@ async def import_bank_pdf(acc_id: int, file: UploadFile = File(...), db: Session
             "transactions": len(txns), "total_credits": round(total_c, 2),
             "total_debits": round(total_d, 2), "closing_balance": result["closing"],
             "period": period, "top_categories": top,
+            "uncategorized": uncategorized_descriptions(txns),
         }
     except HTTPException: raise
     except Exception as e:
@@ -768,14 +929,19 @@ async def import_bank_pdf(acc_id: int, file: UploadFile = File(...), db: Session
 
 
 @router.post("/credit-card/{card_id}")
-async def import_cc_pdf(card_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_cc_pdf(card_id: int, file: UploadFile = File(...),
+                        password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     card = db.query(CreditCard).filter(CreditCard.id == card_id).first()
     if not card:
         raise HTTPException(404, "Card not found")
     content = await file.read()
+    content = decrypt_pdf_if_needed(content, password)
     try:
         result = detect_and_parse_cc(content)
         txns = result["txns"]
+        rules = load_rules(db)
+        for t in txns:
+            t["category"] = apply_rules(t["description"], t["category"], rules)
         db.query(CreditCardTransaction).filter(CreditCardTransaction.card_id == card_id).delete()
         imported = 0
         for t in txns:
@@ -809,6 +975,8 @@ async def import_cc_pdf(card_id: int, file: UploadFile = File(...), db: Session 
             "available_credit": result.get("available_credit", 0),
             "payment_due_date": str(result.get("payment_due_date") or ""),
             "top_categories": top,
+            "uncategorized": uncategorized_descriptions(
+                [t for t in txns if t["transaction_type"] != "payment"]),
         }
     except HTTPException: raise
     except Exception as e:
@@ -817,8 +985,10 @@ async def import_cc_pdf(card_id: int, file: UploadFile = File(...), db: Session 
 
 
 @router.post("/investments/alpaca")
-async def import_alpaca_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_alpaca_pdf(file: UploadFile = File(...),
+                            password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     content = await file.read()
+    content = decrypt_pdf_if_needed(content, password)
     try:
         holdings = parse_alpaca(content)
         if not holdings:
@@ -833,8 +1003,10 @@ async def import_alpaca_pdf(file: UploadFile = File(...), db: Session = Depends(
 
 
 @router.post("/investments/aura")
-async def import_aura_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_aura_pdf(file: UploadFile = File(...),
+                          password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     content = await file.read()
+    content = decrypt_pdf_if_needed(content, password)
     try:
         holdings = parse_aura(content)
         if not holdings:
@@ -848,11 +1020,16 @@ async def import_aura_pdf(file: UploadFile = File(...), db: Session = Depends(ge
 
 
 @router.post("/credit-card-preview")
-async def preview_cc_pdf(file: UploadFile = File(...)):
+async def preview_cc_pdf(file: UploadFile = File(...),
+                         password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """Parse CC PDF, return structured data without saving. Used by 'Add from Statement' flow."""
     content = await file.read()
+    content = decrypt_pdf_if_needed(content, password)
     try:
         result = detect_and_parse_cc(content)
+        rules = load_rules(db)
+        for t in result["txns"]:
+            t["category"] = apply_rules(t["description"], t["category"], rules)
         txns_preview = result["txns"][:10]
         return {
             "bank": result.get("bank", ""), "card_number": result.get("card_number", ""),
@@ -867,6 +1044,8 @@ async def preview_cc_pdf(file: UploadFile = File(...)):
                 for t in txns_preview
             ],
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(400, f"Could not parse PDF: {e}\n{traceback.format_exc()[-300:]}")

@@ -6,7 +6,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import Investment, CreditCard, BankAccount, CreditCardTransaction
 
-router = APIRouter(prefix="/suggestions", tags=["suggestions"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/suggestions", tags=["suggestions"], dependencies=[Depends(require_auth)])
 
 MONTHLY_INHAND  = 100000
 ANNUAL_CTC      = 1395565

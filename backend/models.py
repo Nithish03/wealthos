@@ -86,6 +86,17 @@ class BankAccount(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CategoryRule(Base):
+    """User-taught merchant→category mapping. pattern is a lowercase substring
+    matched against transaction descriptions; learned rules override the
+    built-in keyword guessers."""
+    __tablename__ = "category_rules"
+    id = Column(Integer, primary_key=True, index=True)
+    pattern = Column(String, nullable=False, unique=True)
+    category = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class NetWorthSnapshot(Base):
     __tablename__ = "net_worth_snapshots"
     id = Column(Integer, primary_key=True, index=True)

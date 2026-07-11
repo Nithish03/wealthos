@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import Session, relationship
 from typing import List, Optional
@@ -8,8 +8,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db, Base
 from models import BankAccount
 from schemas import BankAccountCreate, BankAccountUpdate
+from file_utils import decrypt_xlsx_if_needed
+from categorizer import load_rules, apply_rules, uncategorized_descriptions
 
-router = APIRouter(prefix="/bank-accounts", tags=["bank_accounts"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/bank-accounts", tags=["bank_accounts"], dependencies=[Depends(require_auth)])
 MONTHLY_SALARY = 100000
 
 # ── BankTransaction model (defined inline to avoid circular imports) ──────────
@@ -41,7 +45,10 @@ CATEGORY_KEYWORDS = {
     "Education":     ["coursera","udemy","unacademy","byjus","school","college","course","book"],
     "Investment":    ["groww","zerodha","indmoney","coinswitch","mutual fund","nps","ppf","sip","demat"],
     "ATM":           ["atm withdrawal","cash withdrawal","atm "],
-    "Transfer":      ["neft","imps","rtgs","upi","transfer","sent to","received from","trf"],
+    # NOTE: no bare "upi" here — nearly every Indian bank txn is UPI, and a
+    # bare match would swallow everything into Transfer. Unknown UPI merchants
+    # should stay "Other" so the category trainer can learn them.
+    "Transfer":      ["neft","imps","rtgs","transfer","sent to","received from","trf","self trf"],
 }
 
 def guess_category(desc: str) -> str:
@@ -244,17 +251,19 @@ def _parse_statement_csv(content: bytes, account_id: int):
 
 
 @router.post("/{acc_id}/import-statement")
-async def import_statement(acc_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_statement(acc_id: int, file: UploadFile = File(...),
+                           password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """
-    Import bank statement XLSX or CSV.
+    Import bank statement XLSX or CSV (password-protected XLSX supported).
     Auto-detects Jupiter, DBS, Equitas formats.
-    Auto-categorizes transactions.
+    Auto-categorizes transactions — learned rules first, then keywords.
     Updates account balance to latest closing balance.
     """
     acc = db.query(BankAccount).filter(BankAccount.id == acc_id).first()
     if not acc: raise HTTPException(status_code=404, detail="Account not found")
 
     content  = await file.read()
+    content  = decrypt_xlsx_if_needed(content, password)
     filename = (file.filename or "").lower()
 
     try:
@@ -266,6 +275,10 @@ async def import_statement(acc_id: int, file: UploadFile = File(...), db: Sessio
 
         if not txn_data:
             raise HTTPException(status_code=400, detail="No transactions found. Check file format.")
+
+        rules = load_rules(db)
+        for t in txn_data:
+            t["category"] = apply_rules(t["description"], t["category"], rules)
 
         # Clear old transactions for this account before inserting new ones
         db.query(BankTransaction).filter(BankTransaction.account_id == acc_id).delete()
@@ -315,6 +328,7 @@ async def import_statement(acc_id: int, file: UploadFile = File(...), db: Sessio
             "closing_balance": latest_balance,
             "period":        period,
             "top_categories": top_cats,
+            "uncategorized": uncategorized_descriptions(txn_data),
         }
 
     except HTTPException: raise

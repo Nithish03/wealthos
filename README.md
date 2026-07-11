@@ -51,8 +51,14 @@ A fully local, full-stack personal finance tracker built with **FastAPI + SQLite
 - Wealth milestone projections (₹10L → ₹1Cr)
 - Financial health score (A–D grade)
 
+### 📄 Statement Import
+- PDF import for HDFC / Axis / CSB credit cards and DBS / Federal (Jupiter) / Equitas / Canara bank statements
+- **Password-protected PDFs and XLSX**: the app prompts for the password on upload — no need to unlock files first
+- **Evidence-based format detection**: the detected parser is trusted only if it actually finds transactions; otherwise all parsers compete and a generic text-line parser is the final fallback, so unknown bank formats still import
+- **Learned categories**: when transactions can't be categorized, a popup asks you once — the merchant→category rule is remembered, applied to past transactions, and used in every future import (learned rules always beat keyword guesses)
+
 ### ⚙️ Additional
-- PIN-based local authentication
+- PIN-based local authentication — **all data endpoints require the session token**
 - Monthly auto-snapshots (1st of every month)
 - Excel export (investments, cards, accounts, history)
 - One-click SQLite database backup
@@ -119,9 +125,10 @@ finance-tracker/
 ## 🔒 Security & Privacy
 
 - All data stored in **SQLite at `backend/finance_tracker.db`**
-- No network calls, no telemetry, no external APIs
-- JWT token (30-day expiry) stored in `localStorage`
+- No telemetry; the only external calls are optional Yahoo Finance price refreshes
+- Signed session token (30-day expiry) stored in `localStorage`; every data API requires it
 - To change PIN: Settings → Change PIN (or call `POST /auth/change-pin`)
+- Forgot your PIN? Clear it locally: `sqlite3 backend/finance_tracker.db "DELETE FROM users;"` then set a new one
 
 ---
 

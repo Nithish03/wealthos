@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
@@ -7,8 +7,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import CreditCard, CreditCardTransaction
 from schemas import CreditCardCreate, CreditCardUpdate, TransactionCreate
+from file_utils import decrypt_xlsx_if_needed
+from categorizer import load_rules, apply_rules, uncategorized_descriptions
 
-router = APIRouter(prefix="/credit-cards", tags=["credit_cards"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/credit-cards", tags=["credit_cards"], dependencies=[Depends(require_auth)])
 MONTHLY_SALARY = 100000
 
 CATEGORY_KEYWORDS = {
@@ -117,7 +121,11 @@ def get_transactions(card_id: int, month: Optional[int] = None, year: Optional[i
 def add_transaction(data: TransactionCreate, db: Session = Depends(get_db)):
     card = db.query(CreditCard).filter(CreditCard.id == data.card_id).first()
     if not card: raise HTTPException(status_code=404, detail="Card not found")
-    cat = data.category or guess_category(data.description or "")
+    if data.category:
+        cat = data.category
+    else:
+        desc = data.description or ""
+        cat = apply_rules(desc, guess_category(desc), load_rules(db))
     txn = CreditCardTransaction(
         card_id=data.card_id, amount=data.amount, category=cat,
         description=data.description or "",
@@ -257,16 +265,18 @@ def _parse_csv_statement(content: bytes, card_id: int) -> list:
 
 
 @router.post("/{card_id}/import-statement")
-async def import_statement(card_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_statement(card_id: int, file: UploadFile = File(...),
+                           password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """
-    Import CC statement from XLSX or CSV.
+    Import CC statement from XLSX or CSV (password-protected XLSX supported).
     Auto-detects format. Works with HDFC, Axis, CSB bank exports.
-    Auto-categorizes transactions using merchant name matching.
+    Auto-categorizes transactions — learned rules first, then merchant keywords.
     """
     card = db.query(CreditCard).filter(CreditCard.id == card_id).first()
     if not card: raise HTTPException(status_code=404, detail="Card not found")
 
     content = await file.read()
+    content = decrypt_xlsx_if_needed(content, password)
     filename = (file.filename or "").lower()
 
     try:
@@ -280,6 +290,10 @@ async def import_statement(card_id: int, file: UploadFile = File(...), db: Sessi
 
         if not txn_data:
             raise HTTPException(status_code=400, detail="No debit transactions found. Check if the file has the right format.")
+
+        rules = load_rules(db)
+        for t in txn_data:
+            t["category"] = apply_rules(t["description"], t["category"], rules)
 
         imported = 0
         total_amount = 0
@@ -305,6 +319,7 @@ async def import_statement(card_id: int, file: UploadFile = File(...), db: Sessi
             "category_breakdown": {k: round(v, 2) for k, v in sorted(by_cat.items(), key=lambda x: -x[1])},
             "sample": [{"date": str(t["transaction_date"].date()), "desc": t["description"][:50],
                         "amount": t["amount"], "category": t["category"]} for t in txn_data[:5]],
+            "uncategorized": uncategorized_descriptions(txn_data),
         }
 
     except HTTPException: raise
@@ -314,5 +329,6 @@ async def import_statement(card_id: int, file: UploadFile = File(...), db: Sessi
 
 # Keep old endpoint for compatibility
 @router.post("/{card_id}/import-csv")
-async def import_csv_compat(card_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    return await import_statement(card_id=card_id, file=file, db=db)
+async def import_csv_compat(card_id: int, file: UploadFile = File(...),
+                            password: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    return await import_statement(card_id=card_id, file=file, password=password, db=db)

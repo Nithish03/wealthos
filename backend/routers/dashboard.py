@@ -6,7 +6,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import Investment, CreditCard, BankAccount, NetWorthSnapshot, CreditCardTransaction
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_auth)])
 
 MONTHLY_SALARY = 100000
 ANNUAL_CTC = 1395565

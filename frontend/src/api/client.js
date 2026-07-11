@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { downloadBlob } from '../utils/helpers'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -18,6 +19,41 @@ api.interceptors.response.use(
   }
 )
 export default api
+
+/* ── Error helpers ─────────────────────────────────────────────── */
+const detail = (e) => e?.response?.data?.detail
+export const apiErrMsg = (e, fallback = 'Something went wrong') => {
+  const d = detail(e)
+  if (typeof d === 'string') return d
+  return d?.message || fallback
+}
+const needsPassword = (e) => ['password_required', 'password_incorrect'].includes(detail(e)?.code)
+
+/* Run an import; if the backend reports the file is password-protected,
+   prompt the user and retry with the password (up to 3 attempts). */
+export const withFilePassword = async (fn) => {
+  let password
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fn(password)
+    } catch (e) {
+      if (!needsPassword(e)) throw e
+      const msg = detail(e)?.code === 'password_incorrect'
+        ? '❌ Incorrect password. Try again:'
+        : '🔒 This statement is password-protected.\nEnter the file password:'
+      password = window.prompt(msg)
+      if (!password) throw e
+    }
+  }
+}
+
+const fileForm = (file, password) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  if (password) fd.append('password', password)
+  return fd
+}
+const MP = { headers: { 'Content-Type': 'multipart/form-data' } }
 
 export const authAPI = {
   status: () => api.get('/auth/status'),
@@ -39,12 +75,8 @@ export const investmentsAPI = {
   update:  (id, data) => api.put(`/investments/${id}`, data),
   delete:  (id) => api.delete(`/investments/${id}`),
   refreshPrices: () => api.post('/investments/refresh-prices'),
-  importXLSX: (broker, file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return api.post(`/investments/import-xlsx?broker=${broker}`, fd,
-      { headers: { 'Content-Type': 'multipart/form-data' } })
-  },
+  importXLSX: (broker, file, password) =>
+    api.post(`/investments/import-xlsx?broker=${broker}`, fileForm(file, password), MP),
 }
 
 export const creditCardsAPI = {
@@ -56,12 +88,8 @@ export const creditCardsAPI = {
   addTransaction:   (data) => api.post('/credit-cards/transactions', data),
   deleteTransaction:(id) => api.delete(`/credit-cards/transactions/${id}`),
   spendingSummary:  (params) => api.get('/credit-cards/spending-summary', { params }),
-  importStatement:  (cardId, file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return api.post(`/credit-cards/${cardId}/import-statement`, fd,
-      { headers: { 'Content-Type': 'multipart/form-data' } })
-  },
+  importStatement:  (cardId, file, password) =>
+    api.post(`/credit-cards/${cardId}/import-statement`, fileForm(file, password), MP),
 }
 
 export const bankAccountsAPI = {
@@ -71,25 +99,34 @@ export const bankAccountsAPI = {
   update:  (id, data) => api.put(`/bank-accounts/${id}`, data),
   delete:  (id) => api.delete(`/bank-accounts/${id}`),
   transactions: (id) => api.get(`/bank-accounts/${id}/transactions`),
-  importStatement: (id, file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return api.post(`/bank-accounts/${id}/import-statement`, fd,
-      { headers: { 'Content-Type': 'multipart/form-data' } })
-  },
+  importStatement: (id, file, password) =>
+    api.post(`/bank-accounts/${id}/import-statement`, fileForm(file, password), MP),
 }
 
 export const suggestionsAPI = { get: () => api.get('/suggestions/') }
 
+export const categoriesAPI = {
+  rules:      () => api.get('/categories/rules'),
+  saveRules:  (rules) => api.post('/categories/rules/bulk', rules),
+  deleteRule: (id) => api.delete(`/categories/rules/${id}`),
+}
+
+/* Exports go through axios (not window.open) so the bearer token is sent */
 export const exportAPI = {
-  excel:    () => window.open('/api/export/excel', '_blank'),
-  backupDB: () => window.open('/api/export/backup-db', '_blank'),
+  excel: async () => {
+    const res = await api.get('/export/excel', { responseType: 'blob' })
+    downloadBlob(res.data, `wealthos_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  },
+  backupDB: async () => {
+    const res = await api.get('/export/backup-db', { responseType: 'blob' })
+    downloadBlob(res.data, `wealthos_backup_${new Date().toISOString().slice(0, 10)}.db`)
+  },
 }
 
 export const pdfImportAPI = {
-  bankStatement:   (accId, file)  => { const fd=new FormData(); fd.append('file',file); return api.post(`/pdf-import/bank/${accId}`, fd, {headers:{'Content-Type':'multipart/form-data'}}) },
-  creditCard:      (cardId, file) => { const fd=new FormData(); fd.append('file',file); return api.post(`/pdf-import/credit-card/${cardId}`, fd, {headers:{'Content-Type':'multipart/form-data'}}) },
-  creditCardPreview: (file)       => { const fd=new FormData(); fd.append('file',file); return api.post('/pdf-import/credit-card-preview', fd, {headers:{'Content-Type':'multipart/form-data'}}) },
-  alpaca:          (file)         => { const fd=new FormData(); fd.append('file',file); return api.post('/pdf-import/investments/alpaca', fd, {headers:{'Content-Type':'multipart/form-data'}}) },
-  aura:            (file)         => { const fd=new FormData(); fd.append('file',file); return api.post('/pdf-import/investments/aura', fd, {headers:{'Content-Type':'multipart/form-data'}}) },
+  bankStatement:     (accId, file, password)  => api.post(`/pdf-import/bank/${accId}`, fileForm(file, password), MP),
+  creditCard:        (cardId, file, password) => api.post(`/pdf-import/credit-card/${cardId}`, fileForm(file, password), MP),
+  creditCardPreview: (file, password)         => api.post('/pdf-import/credit-card-preview', fileForm(file, password), MP),
+  alpaca:            (file, password)         => api.post('/pdf-import/investments/alpaca', fileForm(file, password), MP),
+  aura:              (file, password)         => api.post('/pdf-import/investments/aura', fileForm(file, password), MP),
 }

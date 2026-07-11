@@ -63,10 +63,10 @@ export default function Layout() {
           <button onClick={handleSnapshot} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all w-full">
             <RefreshCw size={16} />Save Snapshot
           </button>
-          <button onClick={() => exportAPI.excel()} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all w-full">
+          <button onClick={() => exportAPI.excel().catch(() => toast.error('Export failed'))} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all w-full">
             <Download size={16} />Export Excel
           </button>
-          <button onClick={() => exportAPI.backupDB()} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all w-full">
+          <button onClick={() => exportAPI.backupDB().catch(() => toast.error('Backup failed'))} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all w-full">
             <Database size={16} />Backup DB
           </button>
           <button onClick={handleLogout} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-accent-red/70 hover:text-accent-red hover:bg-accent-red/10 transition-all w-full">

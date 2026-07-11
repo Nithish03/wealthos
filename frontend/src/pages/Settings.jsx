@@ -63,8 +63,10 @@ export default function Settings() {
         <div style={{fontWeight:600,fontSize:15,color:'var(--t1)',marginBottom:14}}>📤 Export & Backup</div>
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
           {[
-            { title:'Export to Excel', sub:'Investments, cards, accounts and net worth history', action:()=>exportAPI.excel(),   label:'Export' },
-            { title:'Backup Database', sub:'Download the SQLite .db file for safekeeping',       action:()=>exportAPI.backupDB(), label:'Download' },
+            { title:'Export to Excel', sub:'Investments, cards, accounts and net worth history',
+              action:()=>exportAPI.excel().then(()=>toast.success('Exported!')).catch(()=>toast.error('Export failed')), label:'Export' },
+            { title:'Backup Database', sub:'Download the SQLite .db file for safekeeping',
+              action:()=>exportAPI.backupDB().then(()=>toast.success('Backup downloaded!')).catch(()=>toast.error('Backup failed')), label:'Download' },
             { title:'Manual Snapshot', sub:"Save today's net worth to history",                  action:takeSnapshot,             label:'Snapshot Now' },
           ].map((row,i)=>(
             <div key={i} style={{display:'flex',alignItems:'center',justifyContent:'space-between',

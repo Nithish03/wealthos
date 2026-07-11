@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
 import sys, os, io, json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
+from file_utils import decrypt_xlsx_if_needed
 from models import Investment
 from schemas import InvestmentCreate, InvestmentUpdate
 
-router = APIRouter(prefix="/investments", tags=["investments"])
+from routers.auth import require_auth
+
+router = APIRouter(prefix="/investments", tags=["investments"], dependencies=[Depends(require_auth)])
 
 
 def enrich(inv: Investment) -> dict:
@@ -172,14 +175,17 @@ def refresh_prices(db: Session = Depends(get_db)):
 
 
 @router.post("/import-xlsx")
-async def import_xlsx(broker: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_xlsx(broker: str, file: UploadFile = File(...),
+                      password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """
-    Parse Groww Stocks XLSX or Groww MF XLSX directly.
+    Parse Groww Stocks XLSX or Groww MF XLSX directly (password-protected
+    XLSX supported).
     broker = 'groww_stocks' | 'groww_mf' | 'indmoney' | 'coinswitch'
     """
+    content = await file.read()
+    content = decrypt_xlsx_if_needed(content, password)
     try:
         import openpyxl
-        content = await file.read()
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
@@ -339,5 +345,6 @@ async def import_xlsx(broker: str, file: UploadFile = File(...), db: Session = D
 
 # Keep old CSV endpoint for backwards compat
 @router.post("/import-csv")
-async def import_csv(broker: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    return await import_xlsx(broker=broker, file=file, db=db)
+async def import_csv(broker: str, file: UploadFile = File(...),
+                     password: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    return await import_xlsx(broker=broker, file=file, password=password, db=db)
