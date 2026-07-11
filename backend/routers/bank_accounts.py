@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db, Base
 from models import BankAccount
 from schemas import BankAccountCreate, BankAccountUpdate
-from file_utils import decrypt_xlsx_if_needed
+from file_utils import decrypt_xlsx_if_needed, load_workbook_rows
 from categorizer import load_rules, apply_rules, uncategorized_descriptions
 
 from routers.auth import require_auth
@@ -151,10 +151,7 @@ def get_transactions(acc_id: int, limit: int = 100, db: Session = Depends(get_db
 
 
 def _parse_statement_xlsx(content: bytes, account_id: int):
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    rows = load_workbook_rows(content)
 
     # Find header row — look for Date + (Description/Narration/Particulars) + Amount
     header_idx = None

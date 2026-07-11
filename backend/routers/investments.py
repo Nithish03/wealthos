@@ -5,7 +5,7 @@ from datetime import datetime
 import sys, os, io, json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
-from file_utils import decrypt_xlsx_if_needed
+from file_utils import decrypt_xlsx_if_needed, load_workbook_rows
 from models import Investment
 from schemas import InvestmentCreate, InvestmentUpdate
 
@@ -33,6 +33,19 @@ def safe_float(val):
     if val is None: return 0.0
     try: return float(str(val).replace(",", "").replace("₹", "").replace("$", "").strip() or 0)
     except: return 0.0
+
+
+def fetch_usd_inr() -> float:
+    """USD→INR rate from Yahoo; falls back to a recent static rate offline."""
+    try:
+        import urllib.request, json as _json
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/USDINR=X?interval=1d&range=1d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+            return float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
+    except Exception:
+        return 84.0
 
 
 def fetch_live_price(symbol: str) -> Optional[float]:
@@ -138,17 +151,7 @@ def refresh_prices(db: Session = Depends(get_db)):
 
     # Fetch USD/INR once if any US stocks need it
     has_usd = any(getattr(inv, 'currency', 'INR') == 'USD' for inv in investments if inv.symbol)
-    usd_inr = None
-    if has_usd:
-        try:
-            import urllib.request, json as _json
-            url = "https://query1.finance.yahoo.com/v8/finance/chart/USDINR=X?interval=1d&range=1d"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read())
-                usd_inr = float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
-        except Exception:
-            usd_inr = 84.0
+    usd_inr = fetch_usd_inr() if has_usd else None
 
     for inv in investments:
         if not inv.symbol:
@@ -184,12 +187,8 @@ async def import_xlsx(broker: str, file: UploadFile = File(...),
     """
     content = await file.read()
     content = decrypt_xlsx_if_needed(content, password)
+    rows = load_workbook_rows(content)
     try:
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
-
         imported = 0
         skipped = 0
 
@@ -204,6 +203,10 @@ async def import_xlsx(broker: str, file: UploadFile = File(...),
 
             if header_row is None:
                 raise HTTPException(status_code=400, detail="Could not find header row. Expected 'Stock Name' column.")
+
+            # Replace previous import — re-importing must not duplicate holdings
+            db.query(Investment).filter(Investment.platform == "Groww",
+                                        Investment.asset_class != "mutual_funds").delete()
 
             for row in rows[header_row + 1:]:
                 if not row or not row[0]:
@@ -258,6 +261,9 @@ async def import_xlsx(broker: str, file: UploadFile = File(...),
             if header_row is None:
                 raise HTTPException(status_code=400, detail="Could not find 'Scheme Name' header row in MF file.")
 
+            db.query(Investment).filter(Investment.platform == "Groww",
+                                        Investment.asset_class == "mutual_funds").delete()
+
             seen_folios = set()
             for row in rows[header_row + 1:]:
                 if not row or not row[0]:
@@ -284,47 +290,94 @@ async def import_xlsx(broker: str, file: UploadFile = File(...),
                 imported += 1
 
         # ── INDMoney US Stocks / CoinSwitch Crypto ───────────────
+        # INDmoney "INDHOLDINGS" report (legacy .xls) looks like:
+        #   Stock Symbol | Holding Since | Quantity | Avg. Price ($) | Total Value ($)
+        # Quantities are FRACTIONAL shares (0.2097 AAPL) and money is in USD.
+        # "Total Value ($)" is qty × avg price — i.e. cost basis, not market
+        # value — so current_value starts at cost and Live Prices updates it.
         elif broker in ("indmoney", "coinswitch"):
             platform, asset_class = (
                 ("INDMoney", "us_stocks") if broker == "indmoney" else ("CoinSwitch", "crypto")
             )
+
+            def cellstr(c):
+                return str(c).strip().lower() if c is not None else ""
+
             header_row = None
             for i, row in enumerate(rows):
-                if row and any(str(c).strip().lower() in ("name","stock","symbol","coin") for c in row if c):
+                if not row:
+                    continue
+                cells = [cellstr(c) for c in row]
+                has_id  = any(k in c for c in cells for k in ("symbol", "stock", "name", "coin", "ticker"))
+                has_qty = any(k in c for c in cells for k in ("quantity", "qty", "units", "shares"))
+                if has_id and has_qty:
                     header_row = i
                     break
             if header_row is None:
-                raise HTTPException(status_code=400, detail=f"Could not find header row in {platform} file.")
+                raise HTTPException(status_code=400,
+                                    detail=f"Could not find the holdings table in this {platform} file "
+                                           "(expected Symbol/Name and Quantity columns).")
 
-            headers = [str(c).strip().lower() if c else "" for c in rows[header_row]]
-            def col(name_options):
-                for opt in name_options:
-                    for j, h in enumerate(headers):
-                        if opt in h: return j
+            headers = [cellstr(c) for c in rows[header_row]]
+
+            def col(*options):
+                for j, h in enumerate(headers):
+                    if any(o in h for o in options):
+                        return j
                 return None
 
-            nc = col(["name","stock","symbol","coin"])
-            ic = col(["invested","buy value","cost"])
-            cc = col(["current","present","market"])
-            qc = col(["qty","quantity","shares","units"])
-            sc = col(["ticker","symbol"])  # US ticker
+            sc  = col("symbol", "ticker")
+            nc  = col("name")
+            if nc is None: nc = sc if sc is not None else col("stock", "coin")
+            qc  = col("quantity", "qty", "units", "shares")
+            apc = col("avg", "average")                    # avg buy price
+            ic  = col("invested", "buy value", "cost")
+            cc  = col("current", "market", "present")
+            tvc = col("total value")
+            # money columns marked with $/USD mean the file needs FX conversion
+            is_usd = any(("$" in h) or ("usd" in h) for h in headers)
+            usd_inr = fetch_usd_inr() if is_usd else 1.0
+
+            db.query(Investment).filter(Investment.platform == platform).delete()
 
             for row in rows[header_row + 1:]:
-                if not row or not row[nc or 0]: continue
-                name     = str(row[nc]).strip() if nc is not None else "Unknown"
-                invested = safe_float(row[ic]) if ic is not None else 0
-                current  = safe_float(row[cc]) if cc is not None else 0
-                qty      = safe_float(row[qc]) if qc is not None else 0
-                symbol   = str(row[sc]).strip() if sc is not None and row[sc] else ""
+                if not row:
+                    continue
+                name   = str(row[nc]).strip() if nc is not None and nc < len(row) and row[nc] else ""
+                symbol = str(row[sc]).strip() if sc is not None and sc < len(row) and row[sc] else ""
+                qty    = safe_float(row[qc])  if qc is not None and qc < len(row) else 0
+                avg_px = safe_float(row[apc]) if apc is not None and apc < len(row) else 0
+                invested = safe_float(row[ic])  if ic is not None and ic < len(row) else 0
+                current  = safe_float(row[cc])  if cc is not None and cc < len(row) else 0
+                total_v  = safe_float(row[tvc]) if tvc is not None and tvc < len(row) else 0
 
-                if name and invested > 0:
-                    inv = Investment(
-                        name=name, asset_class=asset_class, platform=platform,
-                        invested_amount=invested, current_value=current,
-                        units=qty, symbol=symbol,
-                    )
-                    db.add(inv)
-                    imported += 1
+                if invested == 0:
+                    invested = total_v if total_v > 0 else qty * avg_px
+                if current == 0:
+                    # no market value in the file — start at cost, Live Prices refreshes it
+                    current = total_v if total_v > 0 else invested
+
+                if not name or qty == 0 or invested == 0:
+                    skipped += 1
+                    continue
+
+                notes = ""
+                if is_usd:
+                    notes = f"Cost ${invested:,.2f} @ USD/INR {usd_inr:.2f}"
+                    if avg_px > 0:
+                        notes += f" | Avg buy ${avg_px:,.2f}"
+                inv = Investment(
+                    name=name, asset_class=asset_class, platform=platform,
+                    invested_amount=round(invested * usd_inr, 2),
+                    current_value=round(current * usd_inr, 2),
+                    units=qty,  # fractional shares preserved exactly
+                    symbol=symbol,
+                    currency="USD" if is_usd else "INR",
+                    fx_rate=usd_inr if is_usd else 0.0,
+                    notes=notes,
+                )
+                db.add(inv)
+                imported += 1
 
         else:
             raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use groww_stocks, groww_mf, indmoney, or coinswitch")

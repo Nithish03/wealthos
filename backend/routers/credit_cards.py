@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import CreditCard, CreditCardTransaction
 from schemas import CreditCardCreate, CreditCardUpdate, TransactionCreate
-from file_utils import decrypt_xlsx_if_needed
+from file_utils import decrypt_xlsx_if_needed, load_workbook_rows
 from categorizer import load_rules, apply_rules, uncategorized_descriptions
 
 from routers.auth import require_auth
@@ -181,10 +181,7 @@ def spending_summary(month: Optional[int] = None, year: Optional[int] = None, db
 
 def _parse_xlsx_statement(content: bytes, card_id: int) -> list:
     """Universal XLSX CC statement parser — handles HDFC, Axis, CSB formats"""
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    rows = load_workbook_rows(content)
 
     # Find header row by looking for Date + Description/Narration + Amount columns
     header_row_idx = None

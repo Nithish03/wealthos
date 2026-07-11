@@ -48,6 +48,40 @@ def decrypt_pdf_if_needed(content: bytes, password: Optional[str] = None) -> byt
         return out.getvalue()
 
 
+def load_workbook_rows(content: bytes) -> list:
+    """Read the first sheet of an Excel file as a list of row tuples.
+
+    Handles both modern .xlsx (openpyxl) and legacy .xls / BIFF (xlrd) —
+    INDmoney, and several banks, still export the old format, which
+    openpyxl cannot open at all.
+    """
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        return [tuple(r) for r in wb.active.iter_rows(values_only=True)]
+    except Exception:
+        pass
+    try:
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=content)
+        sh = wb.sheet_by_index(0)
+        rows = []
+        for r in range(sh.nrows):
+            row = []
+            for c in range(sh.ncols):
+                cell = sh.cell(r, c)
+                if cell.ctype == xlrd.XL_CELL_DATE:
+                    row.append(xlrd.xldate_as_datetime(cell.value, wb.datemode))
+                else:
+                    row.append(cell.value)
+            rows.append(tuple(row))
+        return rows
+    except Exception:
+        raise HTTPException(status_code=400, detail=(
+            "Could not read this Excel file. Supported: .xlsx and legacy .xls "
+            "(if it opens in Excel but fails here, re-save it as .xlsx and retry)."))
+
+
 def decrypt_xlsx_if_needed(content: bytes, password: Optional[str] = None) -> bytes:
     """Return decrypted XLSX bytes. Plain XLSX/CSV files pass through untouched."""
     if content[:8] != OLE_MAGIC:

@@ -21,7 +21,7 @@ const PDF_BROKERS = {
 const BROKER_INFO = {
   groww_stocks: { label:'Groww — Stocks', file:'Stocks_Holdings_Statement_*.xlsx',     tip:'Groww → Portfolio → Stocks → Download Statement' },
   groww_mf:     { label:'Groww — MF',     file:'Mutual_Funds_*.xlsx',                  tip:'Groww → Portfolio → Mutual Funds → Download Statement' },
-  indmoney:     { label:'INDMoney — US',  file:'*.xlsx or *.csv',                      tip:'INDMoney → Portfolio → US Stocks → Export' },
+  indmoney:     { label:'INDMoney — US',  file:'INDHOLDINGS_REPORT*.xls',              tip:'INDmoney → US Stocks → Reports → Holdings report. USD values auto-convert to INR; fractional shares supported. Run Live Prices after import for current values.' },
   coinswitch:   { label:'CoinSwitch',     file:'*.xlsx or *.csv',                      tip:'CoinSwitch → Portfolio → Export' },
 }
 const COLORS = ['#00d4aa','#3b82f6','#a855f7','#f59e0b','#fbbf24','#f97316','#10b981','#ec4899','#94a3b8']
