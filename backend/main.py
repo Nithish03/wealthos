@@ -12,7 +12,7 @@ import models
 Base.metadata.create_all(bind=engine)
 
 # Import routers (BankTransaction table is created inside bank_accounts router)
-from routers import auth, investments, credit_cards, bank_accounts, dashboard, suggestions, export, pdf_import, categories
+from routers import auth, investments, credit_cards, bank_accounts, dashboard, suggestions, export, pdf_import, categories, imports_auto, insights, transactions
 
 # Now create bank_transactions table too
 from routers.bank_accounts import BankTransaction
@@ -39,6 +39,12 @@ def run_migrations():
         ("investments",  "fx_rate",              "FLOAT DEFAULT 0.0"),
         # CC transaction type
         ("credit_card_transactions", "transaction_type", "TEXT DEFAULT 'debit'"),
+        # D6 matching flags
+        ("credit_card_transactions", "is_reimbursement", "BOOLEAN DEFAULT 0"),
+        ("credit_card_transactions", "matched_txn_id",   "INTEGER"),
+        ("bank_transactions", "is_self_transfer", "BOOLEAN DEFAULT 0"),
+        ("bank_transactions", "is_reimbursement", "BOOLEAN DEFAULT 0"),
+        ("bank_transactions", "matched_txn_id",   "INTEGER"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in migrations:
@@ -66,7 +72,7 @@ app.add_middleware(
 # so one port (8000) is all a phone needs.
 for r in (auth.router, investments.router, credit_cards.router, bank_accounts.router,
           dashboard.router, suggestions.router, export.router, pdf_import.router,
-          categories.router):
+          categories.router, imports_auto.router, insights.router, transactions.router):
     app.include_router(r, prefix="/api")
 
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { suggestionsAPI } from '../api/client'
+import { suggestionsAPI, insightsAPI } from '../api/client'
 import { RefreshCw, TrendingUp, Shield, CreditCard, PieChart, Target, BookOpen, Trophy } from 'lucide-react'
 import { RadialBarChart, RadialBar, ResponsiveContainer } from 'recharts'
 import toast from 'react-hot-toast'
@@ -152,13 +152,18 @@ function HealthScore({ score, grade, breakdown }) {
 
 export default function Suggestions() {
   const [data, setData] = useState(null)
+  const [ins, setIns] = useState(null)
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
     try {
-      const res = await suggestionsAPI.get()
+      const [res, insRes] = await Promise.all([
+        suggestionsAPI.get(),
+        insightsAPI.summary().catch(() => ({ data: null })),
+      ])
       setData(res.data)
+      setIns(insRes.data)
     } catch { toast.error('Failed to load suggestions') }
     finally { setLoading(false) }
   }
@@ -202,6 +207,114 @@ export default function Suggestions() {
         {/* Left: suggestions */}
         <div className="lg:col-span-2 space-y-4">
           {data?.suggestions?.map((s, i) => <SuggestionCard key={i} s={s} />)}
+
+          {/* CR12: recurring / subscriptions */}
+          {ins?.recurring && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-text-primary">🔁 Recurring & Subscriptions</div>
+                <div className="text-xs font-mono text-accent-gold">{fmt(ins.recurring.monthly_burn)}/mo fixed burn</div>
+              </div>
+              {ins.recurring.items.length === 0
+                ? <div className="text-xs text-text-muted">Nothing recurring detected yet — needs 3+ months of statements.</div>
+                : ins.recurring.items.map((r, i) => (
+                  <div key={i} className="flex justify-between items-baseline text-xs py-1.5 border-b border-bg-border/40 last:border-0">
+                    <span className="text-text-secondary truncate pr-2">{r.sample}</span>
+                    <span className="text-text-muted whitespace-nowrap mr-3">{r.months_seen} mo · last {r.last_date}</span>
+                    <span className="font-mono text-text-primary whitespace-nowrap">{fmt(r.avg_amount)}/mo</span>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {/* CR17: anomalies */}
+          {ins?.anomalies?.length > 0 && (
+            <div className="card p-4 border-accent-red/30">
+              <div className="text-sm font-medium text-text-primary mb-2">🚨 Unusual Charges (last 60 days)</div>
+              {ins.anomalies.map((a, i) => (
+                <div key={i} className="text-xs py-1.5 border-b border-bg-border/40 last:border-0">
+                  <span className={a.type === 'spike' ? 'text-accent-gold' : 'text-accent-red'}>
+                    {a.type === 'spike' ? '📈' : '👯'} {a.date} · {a.description}
+                  </span>
+                  <div className="text-text-muted mt-0.5">{a.message}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* CR18: interest & fees watchdog */}
+          {ins?.charges && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-text-primary">🩸 Interest, Fees & GST paid</div>
+                <div className={`text-xs font-mono ${ins.charges.total_6m > 0 ? 'text-accent-red' : 'text-accent-green'}`}>
+                  {fmt(ins.charges.total_6m)} in 6 months
+                </div>
+              </div>
+              {ins.charges.items.length === 0
+                ? <div className="text-xs text-text-muted">No interest or fees found — keep paying in full! 💪</div>
+                : ins.charges.items.slice(0, 8).map((c, i) => (
+                  <div key={i} className="flex justify-between text-xs py-1 text-text-secondary">
+                    <span>{c.date} · {c.description}</span>
+                    <span className="font-mono text-accent-red">{fmt(c.amount)}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {/* CR14: tax estimate */}
+          {ins?.tax && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-text-primary">📋 Capital Gains Tax (if sold today)</div>
+                <div className="text-xs font-mono text-accent-gold">est. {fmt(ins.tax.total_estimated_tax)}</div>
+              </div>
+              {ins.tax.rows.map((r, i) => (
+                <div key={i} className="flex justify-between text-xs py-1 text-text-secondary">
+                  <span>{r.asset_class.replace(/_/g, ' ')} <span className="text-text-muted">({r.term || '—'})</span></span>
+                  <span className="font-mono">
+                    gain <span className={r.gain >= 0 ? 'text-accent-green' : 'text-accent-red'}>{fmt(r.gain)}</span>
+                    {r.est_tax > 0 && <span className="text-accent-gold"> · tax {fmt(r.est_tax)}</span>}
+                  </span>
+                </div>
+              ))}
+              {ins.tax.equity_ltcg_gain > 0 && (
+                <div className="text-xs text-text-muted mt-1">
+                  Equity LTCG {fmt(ins.tax.equity_ltcg_gain)} — ₹1.25L exemption used {fmt(ins.tax.equity_ltcg_exemption_used)} → tax {fmt(ins.tax.equity_ltcg_tax)}
+                </div>
+              )}
+              <details className="mt-2">
+                <summary className="text-xs text-text-muted cursor-pointer">Assumptions</summary>
+                <ul className="text-xs text-text-muted mt-1 space-y-0.5">
+                  {ins.tax.assumptions.map((a, i) => <li key={i}>• {a}</li>)}
+                </ul>
+              </details>
+            </div>
+          )}
+
+          {/* CR15: returns */}
+          {ins?.returns && (ins.returns.best?.length > 0) && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-text-primary">📈 Portfolio Returns</div>
+                <div className="text-xs font-mono text-text-primary">overall {ins.returns.overall_abs_pct}%</div>
+              </div>
+              <div className="text-xs text-text-muted mb-2">{ins.returns.note}</div>
+              {ins.returns.best.map((r, i) => (
+                <div key={i} className="flex justify-between text-xs py-1 text-text-secondary">
+                  <span>🏆 {r.name}</span>
+                  <span className="font-mono text-accent-green">{r.abs_return_pct}% ({r.annualized_pct}%/yr)</span>
+                </div>
+              ))}
+              {ins.returns.worst.map((r, i) => (
+                <div key={i} className="flex justify-between text-xs py-1 text-text-secondary">
+                  <span>🐌 {r.name}</span>
+                  <span className={`font-mono ${r.abs_return_pct >= 0 ? 'text-accent-gold' : 'text-accent-red'}`}>
+                    {r.abs_return_pct}% ({r.annualized_pct}%/yr)</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Right: health score + quick stats */}

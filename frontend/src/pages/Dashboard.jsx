@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { dashboardAPI, investmentsAPI } from '../api/client'
+import { dashboardAPI, investmentsAPI, insightsAPI } from '../api/client'
+import UploadCenter from '../components/UploadCenter'
+import TxnSearch from '../components/TxnSearch'
 import { TrendingUp, TrendingDown, AlertTriangle, Wallet, CreditCard, Building2, BarChart3, RefreshCw } from 'lucide-react'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import toast from 'react-hot-toast'
 
 const ASSET_COLORS = {
@@ -72,19 +74,25 @@ export default function Dashboard() {
   const [overview, setOverview] = useState(null)
   const [history, setHistory] = useState([])
   const [allocation, setAllocation] = useState([])
+  const [trend, setTrend] = useState([])
+  const [coverage, setCoverage] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const loadData = async () => {
+  const loadData = async (initial = false) => {
     try {
-      setLoading(true)
-      const [ov, hist, alloc] = await Promise.all([
+      if (initial) setLoading(true)   // background refreshes must not unmount the page
+      const [ov, hist, alloc, tr, cov] = await Promise.all([
         dashboardAPI.overview(),
         dashboardAPI.history(),
         investmentsAPI.summary(),
+        insightsAPI.spendTrend().catch(() => ({ data: [] })),
+        insightsAPI.coverage().catch(() => ({ data: null })),
       ])
       setOverview(ov.data)
       setHistory(hist.data)
       setAllocation(alloc.data.allocation || [])
+      setTrend(tr.data)
+      setCoverage(cov.data)
     } catch (err) {
       toast.error('Failed to load dashboard')
     } finally {
@@ -92,7 +100,7 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData(true) }, [])
 
   if (loading) return (
     <div className="p-4 md:p-8 space-y-4">
@@ -121,6 +129,12 @@ export default function Dashboard() {
           Refresh
         </button>
       </div>
+
+      {/* CR1/CR2: universal statement drop zone */}
+      <UploadCenter onRefresh={loadData} />
+
+      {/* CR11: global transaction search */}
+      <TxnSearch />
 
       {/* Alerts */}
       {overview?.alerts?.length > 0 && <AlertBanner alerts={overview.alerts} />}
@@ -298,6 +312,70 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      {/* CR6 + CR13: spend trend & statement coverage */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="md:col-span-2 card p-5">
+          <div className="text-sm font-medium text-text-primary mb-1">Monthly Spend Trend</div>
+          <div className="text-xs text-text-muted mb-3">CC + bank spend · self-transfers, reimbursements & CC bill payments excluded</div>
+          {trend.every(m => !m.total) ? (
+            <div className="h-40 flex items-center justify-center text-text-muted text-sm">Import statements to see the trend</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={trend}>
+                <XAxis dataKey="label" tick={{ fill: '#7a8aaa', fontSize: 11 }} tickLine={false} axisLine={false} />
+                <YAxis tick={{ fill: '#7a8aaa', fontSize: 11 }} tickLine={false} axisLine={false}
+                  tickFormatter={v => v >= 1000 ? `₹${(v/1000).toFixed(0)}K` : `₹${v}`} />
+                <Tooltip content={<TrendTooltip />} cursor={{ fill: 'rgba(122,138,170,0.08)' }} />
+                <Bar dataKey="cc" name="Credit cards" stackId="s" fill="#3b82f6" radius={[0,0,0,0]} />
+                <Bar dataKey="bank" name="Bank" stackId="s" fill="#00d4aa" radius={[4,4,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div className="card p-5">
+          <div className="text-sm font-medium text-text-primary mb-1">Statement Checklist</div>
+          <div className="text-xs text-text-muted mb-3">Which months are imported</div>
+          {!coverage?.rows?.length ? (
+            <div className="text-text-muted text-sm">Add accounts/cards first</div>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table style={{fontSize:11}}>
+                <thead><tr><th style={{padding:'4px 6px'}}></th>
+                  {coverage.months.map(m => <th key={m} style={{padding:'4px 4px',textAlign:'center'}}>{m.slice(5)}</th>)}
+                </tr></thead>
+                <tbody>
+                  {coverage.rows.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{padding:'4px 6px',whiteSpace:'nowrap',maxWidth:110,overflow:'hidden',textOverflow:'ellipsis'}}>
+                        {r.type === 'cc' ? '💳' : '🏦'} {r.name}
+                      </td>
+                      {r.months.map((ok, j) => (
+                        <td key={j} style={{padding:'4px 4px',textAlign:'center',
+                          color: ok ? '#00d4aa' : '#3d4d6a'}}>{ok ? '✓' : '·'}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const TrendTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null
+  const m = payload[0]?.payload
+  return (
+    <div className="card p-3 text-xs space-y-1">
+      <div className="font-medium text-text-secondary">{label} — total {fmt(m?.total)}</div>
+      {payload.map((p, i) => <div key={i} style={{ color: p.color }}>{p.name}: {fmt(p.value)}</div>)}
+      {m?.top_categories?.slice(0, 3).map((c, i) => (
+        <div key={i} className="text-text-muted">{c.category}: {fmt(c.amount)}</div>
+      ))}
     </div>
   )
 }

@@ -13,7 +13,7 @@ from categorizer import load_rules, apply_rules, uncategorized_descriptions
 from routers.auth import require_auth
 
 router = APIRouter(prefix="/credit-cards", tags=["credit_cards"], dependencies=[Depends(require_auth)])
-MONTHLY_SALARY = 100000
+MONTHLY_SALARY = 89200  # in-hand cash (excl. ₹8,800 food card)
 
 CATEGORY_KEYWORDS = {
     "Food & Dining":   ["zomato","swiggy","domino","pizza","mcdonald","kfc","restaurant","cafe","food","eat","dining","hotel","bar","bake","burger","biryani"],
@@ -114,6 +114,7 @@ def get_transactions(card_id: int, month: Optional[int] = None, year: Optional[i
                      CreditCardTransaction.transaction_date < end)
     return [{"id": t.id, "card_id": t.card_id, "amount": t.amount, "category": t.category,
              "description": t.description, "transaction_date": t.transaction_date,
+             "transaction_type": t.transaction_type, "is_reimbursement": t.is_reimbursement,
              "created_at": t.created_at} for t in q.order_by(CreditCardTransaction.transaction_date.desc()).all()]
 
 
@@ -288,36 +289,11 @@ async def import_statement(card_id: int, file: UploadFile = File(...),
         if not txn_data:
             raise HTTPException(status_code=400, detail="No debit transactions found. Check if the file has the right format.")
 
-        rules = load_rules(db)
         for t in txn_data:
-            t["category"] = apply_rules(t["description"], t["category"], rules)
-
-        imported = 0
-        total_amount = 0
-        for t in txn_data:
-            txn = CreditCardTransaction(**t)
-            db.add(txn)
-            total_amount += t["amount"]
-            imported += 1
-
-        # Update card balance to reflect imported transactions
-        card.current_balance = total_amount
-        db.commit()
-
-        # Category breakdown
-        by_cat = {}
-        for t in txn_data:
-            by_cat[t["category"]] = by_cat.get(t["category"], 0) + t["amount"]
-
-        return {
-            "message": f"Imported {imported} transactions totalling ₹{total_amount:,.2f}",
-            "imported": imported,
-            "total_amount": round(total_amount, 2),
-            "category_breakdown": {k: round(v, 2) for k, v in sorted(by_cat.items(), key=lambda x: -x[1])},
-            "sample": [{"date": str(t["transaction_date"].date()), "desc": t["description"][:50],
-                        "amount": t["amount"], "category": t["category"]} for t in txn_data[:5]],
-            "uncategorized": uncategorized_descriptions(txn_data),
-        }
+            t.pop("card_id", None)
+            t.setdefault("transaction_type", "debit")
+        from matching import apply_cc_import
+        return apply_cc_import({"txns": txn_data, "bank": "Excel/CSV statement"}, card, db)
 
     except HTTPException: raise
     except Exception as e:

@@ -14,7 +14,7 @@ from categorizer import load_rules, apply_rules, uncategorized_descriptions
 from routers.auth import require_auth
 
 router = APIRouter(prefix="/bank-accounts", tags=["bank_accounts"], dependencies=[Depends(require_auth)])
-MONTHLY_SALARY = 100000
+MONTHLY_SALARY = 89200  # in-hand cash (excl. ₹8,800 food card)
 
 # ── BankTransaction model (defined inline to avoid circular imports) ──────────
 class BankTransaction(Base):
@@ -29,6 +29,9 @@ class BankTransaction(Base):
     balance          = Column(Float, default=0.0)   # closing balance after txn
     category         = Column(String, default="Other")
     reference        = Column(String, default="")
+    is_self_transfer = Column(Boolean, default=False)
+    is_reimbursement = Column(Boolean, default=False)
+    matched_txn_id   = Column(Integer, nullable=True)
     created_at       = Column(DateTime, default=datetime.utcnow)
 
 
@@ -147,6 +150,7 @@ def get_transactions(acc_id: int, limit: int = 100, db: Session = Depends(get_db
         "description": t.description, "debit_amount": t.debit_amount,
         "credit_amount": t.credit_amount, "balance": t.balance,
         "category": t.category, "reference": t.reference,
+        "is_self_transfer": t.is_self_transfer, "is_reimbursement": t.is_reimbursement,
     } for t in txns]
 
 
@@ -221,8 +225,9 @@ def _parse_statement_csv(content: bytes, account_id: int):
         keys = {k.strip().lower(): v for k, v in row.items()}
         date_key = next((k for k in keys if "date" in k), None)
         desc_key = next((k for k in keys if any(x in k for x in ["description","narration","particulars","details"])), None)
-        deb_key  = next((k for k in keys if any(x in k for x in ["debit","withdrawal","dr"])), None)
-        cr_key   = next((k for k in keys if any(x in k for x in ["credit","deposit","cr"])), None)
+        # exact-word match for dr/cr — a bare "cr" substring matches "desCRiption"
+        deb_key  = next((k for k in keys if k in ("dr", "dr.") or "debit" in k or "withdrawal" in k), None)
+        cr_key   = next((k for k in keys if k in ("cr", "cr.") or "credit" in k or "deposit" in k), None)
         bal_key  = next((k for k in keys if "balance" in k), None)
         amt_key  = next((k for k in keys if "amount" in k), None) if not deb_key else None
 
@@ -273,60 +278,17 @@ async def import_statement(acc_id: int, file: UploadFile = File(...),
         if not txn_data:
             raise HTTPException(status_code=400, detail="No transactions found. Check file format.")
 
-        rules = load_rules(db)
+        # each txn dict carries account_id; the shared applier adds it itself
         for t in txn_data:
-            t["category"] = apply_rules(t["description"], t["category"], rules)
-
-        # Clear old transactions for this account before inserting new ones
-        db.query(BankTransaction).filter(BankTransaction.account_id == acc_id).delete()
-
-        total_debits  = 0.0
-        total_credits = 0.0
-        latest_balance = None
-        latest_date    = None
-
+            t.pop("account_id", None)
+        latest_balance = 0.0
+        latest_date = None
         for t in txn_data:
-            txn = BankTransaction(**t)
-            db.add(txn)
-            total_debits  += t["debit_amount"]
-            total_credits += t["credit_amount"]
-            if t["balance"] > 0:
-                if latest_date is None or t["transaction_date"] > latest_date:
-                    latest_date    = t["transaction_date"]
-                    latest_balance = t["balance"]
-
-        # Update account balance from latest closing balance in statement
-        if latest_balance and latest_balance > 0:
-            acc.balance = latest_balance
-        # Update inflow/outflow estimates
-        if total_credits > 0: acc.monthly_inflow  = round(total_credits, 2)
-        if total_debits  > 0: acc.monthly_outflow = round(total_debits,  2)
-        acc.last_updated = datetime.utcnow()
-        db.commit()
-
-        # Category breakdown
-        by_cat = {}
-        for t in txn_data:
-            if t["debit_amount"] > 0:
-                by_cat[t["category"]] = by_cat.get(t["category"], 0) + t["debit_amount"]
-
-        top_cats = sorted([{"category": k, "amount": round(v, 2)} for k, v in by_cat.items()],
-                          key=lambda x: -x["amount"])[:6]
-
-        # Date range
-        dates = [t["transaction_date"] for t in txn_data]
-        period = f"{min(dates).strftime('%d %b')} – {max(dates).strftime('%d %b %Y')}" if dates else "—"
-
-        return {
-            "message":       f"Imported {len(txn_data)} transactions",
-            "transactions":  len(txn_data),
-            "total_credits": round(total_credits, 2),
-            "total_debits":  round(total_debits, 2),
-            "closing_balance": latest_balance,
-            "period":        period,
-            "top_categories": top_cats,
-            "uncategorized": uncategorized_descriptions(txn_data),
-        }
+            if t["balance"] > 0 and (latest_date is None or t["transaction_date"] > latest_date):
+                latest_date, latest_balance = t["transaction_date"], t["balance"]
+        from matching import apply_bank_import
+        return apply_bank_import({"txns": txn_data, "closing": latest_balance,
+                                  "bank": "Excel/CSV statement"}, acc, db)
 
     except HTTPException: raise
     except Exception as e:

@@ -56,6 +56,7 @@ from database import get_db
 from models import BankAccount, CreditCard, CreditCardTransaction, Investment
 from file_utils import decrypt_pdf_if_needed
 from categorizer import load_rules, apply_rules, uncategorized_descriptions
+from matching import apply_bank_import, apply_cc_import
 from routers.bank_accounts import BankTransaction, guess_category
 
 from routers.auth import require_auth
@@ -892,36 +893,9 @@ async def import_bank_pdf(acc_id: int, file: UploadFile = File(...),
     content = decrypt_pdf_if_needed(content, password)
     try:
         result = detect_and_parse_bank(content)
-        txns = result["txns"]
-        if not txns:
+        if not result["txns"]:
             raise HTTPException(400, f"No transactions found. Detected format: {result['bank']}")
-        rules = load_rules(db)
-        for t in txns:
-            t["category"] = apply_rules(t["description"], t["category"], rules)
-        db.query(BankTransaction).filter(BankTransaction.account_id == acc_id).delete()
-        total_d = total_c = 0.0
-        for t in txns:
-            db.add(BankTransaction(account_id=acc_id, **t))
-            total_d += t["debit_amount"]; total_c += t["credit_amount"]
-        if result["closing"] > 0: acc.balance = result["closing"]
-        if total_c > 0: acc.monthly_inflow = round(total_c, 2)
-        if total_d > 0: acc.monthly_outflow = round(total_d, 2)
-        acc.last_updated = datetime.utcnow()
-        db.commit()
-        dates = [t["transaction_date"] for t in txns]
-        period = f"{min(dates).strftime('%d %b')} – {max(dates).strftime('%d %b %Y')}" if dates else "—"
-        by_cat = {}
-        for t in txns:
-            if t["debit_amount"] > 0:
-                by_cat[t["category"]] = by_cat.get(t["category"], 0) + t["debit_amount"]
-        top = sorted([{"category": k, "amount": round(v, 2)} for k, v in by_cat.items()], key=lambda x: -x["amount"])[:5]
-        return {
-            "message": f"Imported {len(txns)} transactions from {result['bank']}",
-            "transactions": len(txns), "total_credits": round(total_c, 2),
-            "total_debits": round(total_d, 2), "closing_balance": result["closing"],
-            "period": period, "top_categories": top,
-            "uncategorized": uncategorized_descriptions(txns),
-        }
+        return apply_bank_import(result, acc, db)
     except HTTPException: raise
     except Exception as e:
         import traceback
@@ -938,46 +912,7 @@ async def import_cc_pdf(card_id: int, file: UploadFile = File(...),
     content = decrypt_pdf_if_needed(content, password)
     try:
         result = detect_and_parse_cc(content)
-        txns = result["txns"]
-        rules = load_rules(db)
-        for t in txns:
-            t["category"] = apply_rules(t["description"], t["category"], rules)
-        db.query(CreditCardTransaction).filter(CreditCardTransaction.card_id == card_id).delete()
-        imported = 0
-        for t in txns:
-            if t["transaction_type"] == "payment": continue
-            db.add(CreditCardTransaction(
-                card_id=card_id, transaction_date=t["transaction_date"],
-                description=t["description"], amount=t["amount"],
-                category=t["category"], transaction_type=t["transaction_type"],
-            ))
-            imported += 1
-        if result.get("total_due", 0) > 0:
-            card.total_due = result["total_due"]; card.current_balance = result["total_due"]
-        if result.get("min_due", 0) > 0: card.minimum_due = result["min_due"]
-        if result.get("credit_limit", 0) > 0: card.credit_limit = result["credit_limit"]
-        if result.get("available_credit", 0) > 0: card.available_credit = result["available_credit"]
-        if result.get("available_cash_limit", 0) > 0: card.available_cash_limit = result["available_cash_limit"]
-        if result.get("payment_due_date"): card.payment_due_date = result["payment_due_date"]
-        if result.get("statement_date"): card.statement_date = result["statement_date"]
-        if result.get("billing_start"): card.billing_start = result["billing_start"]
-        if result.get("billing_end"): card.billing_end = result["billing_end"]
-        db.commit()
-        by_cat = {}
-        for t in txns:
-            if t["transaction_type"] != "payment":
-                by_cat[t["category"]] = by_cat.get(t["category"], 0) + abs(t["amount"])
-        top = sorted([{"category": k, "amount": round(v, 2)} for k, v in by_cat.items()], key=lambda x: -x["amount"])[:5]
-        return {
-            "message": f"Imported {imported} transactions from {result['bank']}",
-            "transactions": imported, "total_due": result.get("total_due", 0),
-            "min_due": result.get("min_due", 0), "credit_limit": result.get("credit_limit", 0),
-            "available_credit": result.get("available_credit", 0),
-            "payment_due_date": str(result.get("payment_due_date") or ""),
-            "top_categories": top,
-            "uncategorized": uncategorized_descriptions(
-                [t for t in txns if t["transaction_type"] != "payment"]),
-        }
+        return apply_cc_import(result, card, db)
     except HTTPException: raise
     except Exception as e:
         import traceback

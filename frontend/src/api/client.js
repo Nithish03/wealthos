@@ -123,6 +123,28 @@ export const exportAPI = {
   },
 }
 
+// CR1: universal auto-import. params: {kind, target_id} to force routing.
+export const importAPI = {
+  auto: (file, password, params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null)).toString()
+    return api.post(`/import/auto${qs ? '?' + qs : ''}`, fileForm(file, password), MP)
+  },
+}
+export const needsTarget = (e) => e?.response?.data?.detail?.code === 'target_required'
+
+export const insightsAPI = {
+  spendTrend: () => api.get('/insights/spend-trend'),
+  coverage:   () => api.get('/insights/coverage'),
+  summary:    () => api.get('/insights/summary'),
+  rematch:    () => api.post('/insights/rematch'),
+}
+
+export const transactionsAPI = {
+  search: (q) => api.get('/transactions/search', { params: { q } }),
+  setCategory: (source, id, category, learn = true, pattern = null) =>
+    api.put(`/transactions/${source}/${id}/category`, { category, learn, pattern }),
+}
+
 export const pdfImportAPI = {
   bankStatement:     (accId, file, password)  => api.post(`/pdf-import/bank/${accId}`, fileForm(file, password), MP),
   creditCard:        (cardId, file, password) => api.post(`/pdf-import/credit-card/${cardId}`, fileForm(file, password), MP),

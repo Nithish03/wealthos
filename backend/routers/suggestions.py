@@ -10,7 +10,8 @@ from routers.auth import require_auth
 
 router = APIRouter(prefix="/suggestions", tags=["suggestions"], dependencies=[Depends(require_auth)])
 
-MONTHLY_INHAND  = 100000
+MONTHLY_INHAND  = 89200
+FOOD_CARD       = 8800
 ANNUAL_CTC      = 1395565
 FIXED_CTC       = 1245565
 PERFORMANCE_BONUS = 100000
@@ -108,9 +109,8 @@ def get_suggestions(db: Session = Depends(get_db)):
         "title": "💰 Monthly Savings Target",
         "priority": "high",
         "details": [
-            "Monthly in-hand (gross): ₹1,00,000",
-            "After EPF + Income Tax, est. in-hand: ~₹72,000–75,000",
-            "Target savings rate: 35% → ₹25,000–26,000/month",
+            f"Monthly in-hand: ₹{MONTHLY_INHAND:,} + ₹{FOOD_CARD:,} food card",
+            f"Target savings rate: 35% → ₹{int(MONTHLY_INHAND*0.35):,}/month",
             "Set up auto-debit SIPs on salary day to save before spending",
         ],
         "action": "Automate SIPs of ₹25,000/month on the 1st of every month",
@@ -257,6 +257,7 @@ def get_suggestions(db: Session = Depends(get_db)):
         "suggestions": suggestions,
         "salary": {
             "monthly_inhand": MONTHLY_INHAND,
+            "food_card": FOOD_CARD,
             "annual_ctc": ANNUAL_CTC,
             "fixed_ctc": FIXED_CTC,
             "performance_bonus": PERFORMANCE_BONUS,

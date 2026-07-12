@@ -177,219 +177,235 @@ def refresh_prices(db: Session = Depends(get_db)):
             "details_updated": updated, "details_failed": failed}
 
 
+def detect_broker(rows) -> Optional[str]:
+    """Guess which broker exported this workbook (used by auto-import)."""
+    txt = " ".join(str(c).lower() for row in rows[:15] for c in (row or []) if c)
+    if "scheme name" in txt or "folio" in txt:
+        return "groww_mf"
+    if "stock name" in txt or "scrip name" in txt:
+        return "groww_stocks"
+    if "stock symbol" in txt or "alpaca" in txt or "indmoney" in txt or "holdings_book" in txt:
+        return "indmoney"
+    if "coin" in txt:
+        return "coinswitch"
+    return None
+
+
+def run_broker_import(broker: str, rows: list, db: Session) -> dict:
+    imported = 0
+    skipped = 0
+
+    # ── Groww Stocks ─────────────────────────────────────────
+    if broker == "groww_stocks":
+        # Find header row: Stock Name | ISIN | Quantity | Average buy price | Buy value | Closing price | Closing value
+        header_row = None
+        for i, row in enumerate(rows):
+            if row and str(row[0]).strip().lower() in ("stock name", "scrip name", "symbol"):
+                header_row = i
+                break
+
+        if header_row is None:
+            raise HTTPException(status_code=400, detail="Could not find header row. Expected 'Stock Name' column.")
+
+        # Replace previous import — re-importing must not duplicate holdings
+        db.query(Investment).filter(Investment.platform == "Groww",
+                                    Investment.asset_class != "mutual_funds").delete()
+
+        for row in rows[header_row + 1:]:
+            if not row or not row[0]:
+                continue
+            name         = str(row[0]).strip()
+            isin         = str(row[1]).strip() if row[1] else ""
+            qty          = safe_float(row[2])
+            avg_buy      = safe_float(row[3])
+            buy_value    = safe_float(row[4])
+            closing_px   = safe_float(row[5])
+            closing_val  = safe_float(row[6])
+            unrealised   = safe_float(row[7]) if len(row) > 7 else 0
+
+            if not name or qty == 0:
+                skipped += 1
+                continue
+
+            # Try to find Yahoo symbol from ISIN map
+            yahoo_symbol = ISIN_TO_YAHOO.get(isin, "")
+
+            # Classify asset type by name/ISIN
+            name_up = name.upper()
+            if "GOLDBOND" in name_up or "GOLD BOND" in name_up or isin == "IN0020220110":
+                asset_class = "sgb"
+            elif any(x in name_up for x in ["GOLDBEES","GOLDCASE","GOLDIETF","GOLD ETF"]):
+                asset_class = "gold_etf"
+            elif any(x in name_up for x in ["SILVER","SILVERIETF"]):
+                asset_class = "silver_etf"
+            elif any(x in name_up for x in ["REIT","INVIT"]):
+                asset_class = "indian_stocks"
+            else:
+                asset_class = "indian_stocks"
+
+            inv = Investment(
+                name=name, asset_class=asset_class, platform="Groww",
+                invested_amount=buy_value if buy_value > 0 else avg_buy * qty,
+                current_value=closing_val if closing_val > 0 else closing_px * qty,
+                units=qty, symbol=yahoo_symbol, notes=f"ISIN: {isin}",
+            )
+            db.add(inv)
+            imported += 1
+
+    # ── Groww Mutual Funds ───────────────────────────────────
+    elif broker == "groww_mf":
+        # Header row has: Scheme Name | AMC | Category | Sub-category | Folio No. | Source | Units | Invested Value | Current Value | Returns | XIRR
+        header_row = None
+        for i, row in enumerate(rows):
+            if row and str(row[0]).strip().lower() in ("scheme name", "fund name"):
+                header_row = i
+                break
+
+        if header_row is None:
+            raise HTTPException(status_code=400, detail="Could not find 'Scheme Name' header row in MF file.")
+
+        db.query(Investment).filter(Investment.platform == "Groww",
+                                    Investment.asset_class == "mutual_funds").delete()
+
+        seen_folios = set()
+        for row in rows[header_row + 1:]:
+            if not row or not row[0]:
+                continue
+            name        = str(row[0]).strip()
+            amc         = str(row[1]).strip() if row[1] else ""
+            category    = str(row[2]).strip() if row[2] else ""
+            folio       = str(row[4]).strip() if row[4] else ""
+            units       = safe_float(row[6])
+            invested    = safe_float(row[7])
+            current_val = safe_float(row[8])
+
+            if not name or invested == 0:
+                skipped += 1
+                continue
+
+            inv = Investment(
+                name=name, asset_class="mutual_funds", platform="Groww",
+                invested_amount=invested, current_value=current_val,
+                units=units, symbol="",
+                notes=f"AMC: {amc} | Category: {category} | Folio: {folio}",
+            )
+            db.add(inv)
+            imported += 1
+
+    # ── INDMoney US Stocks / CoinSwitch Crypto ───────────────
+    # INDmoney "INDHOLDINGS" report (legacy .xls) looks like:
+    #   Stock Symbol | Holding Since | Quantity | Avg. Price ($) | Total Value ($)
+    # Quantities are FRACTIONAL shares (0.2097 AAPL) and money is in USD.
+    # "Total Value ($)" is qty × avg price — i.e. cost basis, not market
+    # value — so current_value starts at cost and Live Prices updates it.
+    elif broker in ("indmoney", "coinswitch"):
+        platform, asset_class = (
+            ("INDMoney", "us_stocks") if broker == "indmoney" else ("CoinSwitch", "crypto")
+        )
+
+        def cellstr(c):
+            return str(c).strip().lower() if c is not None else ""
+
+        header_row = None
+        for i, row in enumerate(rows):
+            if not row:
+                continue
+            cells = [cellstr(c) for c in row]
+            has_id  = any(k in c for c in cells for k in ("symbol", "stock", "name", "coin", "ticker"))
+            has_qty = any(k in c for c in cells for k in ("quantity", "qty", "units", "shares"))
+            if has_id and has_qty:
+                header_row = i
+                break
+        if header_row is None:
+            raise HTTPException(status_code=400,
+                                detail=f"Could not find the holdings table in this {platform} file "
+                                       "(expected Symbol/Name and Quantity columns).")
+
+        headers = [cellstr(c) for c in rows[header_row]]
+
+        def col(*options):
+            for j, h in enumerate(headers):
+                if any(o in h for o in options):
+                    return j
+            return None
+
+        sc  = col("symbol", "ticker")
+        nc  = col("name")
+        if nc is None: nc = sc if sc is not None else col("stock", "coin")
+        qc  = col("quantity", "qty", "units", "shares")
+        apc = col("avg", "average")                    # avg buy price
+        ic  = col("invested", "buy value", "cost")
+        cc  = col("current", "market", "present")
+        tvc = col("total value")
+        # money columns marked with $/USD mean the file needs FX conversion
+        is_usd = any(("$" in h) or ("usd" in h) for h in headers)
+        usd_inr = fetch_usd_inr() if is_usd else 1.0
+
+        db.query(Investment).filter(Investment.platform == platform).delete()
+
+        for row in rows[header_row + 1:]:
+            if not row:
+                continue
+            name   = str(row[nc]).strip() if nc is not None and nc < len(row) and row[nc] else ""
+            symbol = str(row[sc]).strip() if sc is not None and sc < len(row) and row[sc] else ""
+            qty    = safe_float(row[qc])  if qc is not None and qc < len(row) else 0
+            avg_px = safe_float(row[apc]) if apc is not None and apc < len(row) else 0
+            invested = safe_float(row[ic])  if ic is not None and ic < len(row) else 0
+            current  = safe_float(row[cc])  if cc is not None and cc < len(row) else 0
+            total_v  = safe_float(row[tvc]) if tvc is not None and tvc < len(row) else 0
+
+            if invested == 0:
+                invested = total_v if total_v > 0 else qty * avg_px
+            if current == 0:
+                # no market value in the file — start at cost, Live Prices refreshes it
+                current = total_v if total_v > 0 else invested
+
+            if not name or qty == 0 or invested == 0:
+                skipped += 1
+                continue
+
+            notes = ""
+            if is_usd:
+                notes = f"Cost ${invested:,.2f} @ USD/INR {usd_inr:.2f}"
+                if avg_px > 0:
+                    notes += f" | Avg buy ${avg_px:,.2f}"
+            inv = Investment(
+                name=name, asset_class=asset_class, platform=platform,
+                invested_amount=round(invested * usd_inr, 2),
+                current_value=round(current * usd_inr, 2),
+                units=qty,  # fractional shares preserved exactly
+                symbol=symbol,
+                currency="USD" if is_usd else "INR",
+                fx_rate=usd_inr if is_usd else 0.0,
+                notes=notes,
+            )
+            db.add(inv)
+            imported += 1
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use groww_stocks, groww_mf, indmoney, or coinswitch")
+
+    db.commit()
+    return {
+        "message": f"Successfully imported {imported} investments ({skipped} rows skipped)",
+        "imported": imported,
+        "skipped": skipped,
+        "broker": broker,
+    }
+
+
 @router.post("/import-xlsx")
 async def import_xlsx(broker: str, file: UploadFile = File(...),
                       password: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """
-    Parse Groww Stocks XLSX or Groww MF XLSX directly (password-protected
-    XLSX supported).
-    broker = 'groww_stocks' | 'groww_mf' | 'indmoney' | 'coinswitch'
+    Parse broker exports: groww_stocks | groww_mf | indmoney | coinswitch.
+    Supports .xlsx, legacy .xls, and password-protected files.
     """
     content = await file.read()
     content = decrypt_xlsx_if_needed(content, password)
     rows = load_workbook_rows(content)
     try:
-        imported = 0
-        skipped = 0
-
-        # ── Groww Stocks ─────────────────────────────────────────
-        if broker == "groww_stocks":
-            # Find header row: Stock Name | ISIN | Quantity | Average buy price | Buy value | Closing price | Closing value
-            header_row = None
-            for i, row in enumerate(rows):
-                if row and str(row[0]).strip().lower() in ("stock name", "scrip name", "symbol"):
-                    header_row = i
-                    break
-
-            if header_row is None:
-                raise HTTPException(status_code=400, detail="Could not find header row. Expected 'Stock Name' column.")
-
-            # Replace previous import — re-importing must not duplicate holdings
-            db.query(Investment).filter(Investment.platform == "Groww",
-                                        Investment.asset_class != "mutual_funds").delete()
-
-            for row in rows[header_row + 1:]:
-                if not row or not row[0]:
-                    continue
-                name         = str(row[0]).strip()
-                isin         = str(row[1]).strip() if row[1] else ""
-                qty          = safe_float(row[2])
-                avg_buy      = safe_float(row[3])
-                buy_value    = safe_float(row[4])
-                closing_px   = safe_float(row[5])
-                closing_val  = safe_float(row[6])
-                unrealised   = safe_float(row[7]) if len(row) > 7 else 0
-
-                if not name or qty == 0:
-                    skipped += 1
-                    continue
-
-                # Try to find Yahoo symbol from ISIN map
-                yahoo_symbol = ISIN_TO_YAHOO.get(isin, "")
-
-                # Classify asset type by name/ISIN
-                name_up = name.upper()
-                if "GOLDBOND" in name_up or "GOLD BOND" in name_up or isin == "IN0020220110":
-                    asset_class = "sgb"
-                elif any(x in name_up for x in ["GOLDBEES","GOLDCASE","GOLDIETF","GOLD ETF"]):
-                    asset_class = "gold_etf"
-                elif any(x in name_up for x in ["SILVER","SILVERIETF"]):
-                    asset_class = "silver_etf"
-                elif any(x in name_up for x in ["REIT","INVIT"]):
-                    asset_class = "indian_stocks"
-                else:
-                    asset_class = "indian_stocks"
-
-                inv = Investment(
-                    name=name, asset_class=asset_class, platform="Groww",
-                    invested_amount=buy_value if buy_value > 0 else avg_buy * qty,
-                    current_value=closing_val if closing_val > 0 else closing_px * qty,
-                    units=qty, symbol=yahoo_symbol, notes=f"ISIN: {isin}",
-                )
-                db.add(inv)
-                imported += 1
-
-        # ── Groww Mutual Funds ───────────────────────────────────
-        elif broker == "groww_mf":
-            # Header row has: Scheme Name | AMC | Category | Sub-category | Folio No. | Source | Units | Invested Value | Current Value | Returns | XIRR
-            header_row = None
-            for i, row in enumerate(rows):
-                if row and str(row[0]).strip().lower() in ("scheme name", "fund name"):
-                    header_row = i
-                    break
-
-            if header_row is None:
-                raise HTTPException(status_code=400, detail="Could not find 'Scheme Name' header row in MF file.")
-
-            db.query(Investment).filter(Investment.platform == "Groww",
-                                        Investment.asset_class == "mutual_funds").delete()
-
-            seen_folios = set()
-            for row in rows[header_row + 1:]:
-                if not row or not row[0]:
-                    continue
-                name        = str(row[0]).strip()
-                amc         = str(row[1]).strip() if row[1] else ""
-                category    = str(row[2]).strip() if row[2] else ""
-                folio       = str(row[4]).strip() if row[4] else ""
-                units       = safe_float(row[6])
-                invested    = safe_float(row[7])
-                current_val = safe_float(row[8])
-
-                if not name or invested == 0:
-                    skipped += 1
-                    continue
-
-                inv = Investment(
-                    name=name, asset_class="mutual_funds", platform="Groww",
-                    invested_amount=invested, current_value=current_val,
-                    units=units, symbol="",
-                    notes=f"AMC: {amc} | Category: {category} | Folio: {folio}",
-                )
-                db.add(inv)
-                imported += 1
-
-        # ── INDMoney US Stocks / CoinSwitch Crypto ───────────────
-        # INDmoney "INDHOLDINGS" report (legacy .xls) looks like:
-        #   Stock Symbol | Holding Since | Quantity | Avg. Price ($) | Total Value ($)
-        # Quantities are FRACTIONAL shares (0.2097 AAPL) and money is in USD.
-        # "Total Value ($)" is qty × avg price — i.e. cost basis, not market
-        # value — so current_value starts at cost and Live Prices updates it.
-        elif broker in ("indmoney", "coinswitch"):
-            platform, asset_class = (
-                ("INDMoney", "us_stocks") if broker == "indmoney" else ("CoinSwitch", "crypto")
-            )
-
-            def cellstr(c):
-                return str(c).strip().lower() if c is not None else ""
-
-            header_row = None
-            for i, row in enumerate(rows):
-                if not row:
-                    continue
-                cells = [cellstr(c) for c in row]
-                has_id  = any(k in c for c in cells for k in ("symbol", "stock", "name", "coin", "ticker"))
-                has_qty = any(k in c for c in cells for k in ("quantity", "qty", "units", "shares"))
-                if has_id and has_qty:
-                    header_row = i
-                    break
-            if header_row is None:
-                raise HTTPException(status_code=400,
-                                    detail=f"Could not find the holdings table in this {platform} file "
-                                           "(expected Symbol/Name and Quantity columns).")
-
-            headers = [cellstr(c) for c in rows[header_row]]
-
-            def col(*options):
-                for j, h in enumerate(headers):
-                    if any(o in h for o in options):
-                        return j
-                return None
-
-            sc  = col("symbol", "ticker")
-            nc  = col("name")
-            if nc is None: nc = sc if sc is not None else col("stock", "coin")
-            qc  = col("quantity", "qty", "units", "shares")
-            apc = col("avg", "average")                    # avg buy price
-            ic  = col("invested", "buy value", "cost")
-            cc  = col("current", "market", "present")
-            tvc = col("total value")
-            # money columns marked with $/USD mean the file needs FX conversion
-            is_usd = any(("$" in h) or ("usd" in h) for h in headers)
-            usd_inr = fetch_usd_inr() if is_usd else 1.0
-
-            db.query(Investment).filter(Investment.platform == platform).delete()
-
-            for row in rows[header_row + 1:]:
-                if not row:
-                    continue
-                name   = str(row[nc]).strip() if nc is not None and nc < len(row) and row[nc] else ""
-                symbol = str(row[sc]).strip() if sc is not None and sc < len(row) and row[sc] else ""
-                qty    = safe_float(row[qc])  if qc is not None and qc < len(row) else 0
-                avg_px = safe_float(row[apc]) if apc is not None and apc < len(row) else 0
-                invested = safe_float(row[ic])  if ic is not None and ic < len(row) else 0
-                current  = safe_float(row[cc])  if cc is not None and cc < len(row) else 0
-                total_v  = safe_float(row[tvc]) if tvc is not None and tvc < len(row) else 0
-
-                if invested == 0:
-                    invested = total_v if total_v > 0 else qty * avg_px
-                if current == 0:
-                    # no market value in the file — start at cost, Live Prices refreshes it
-                    current = total_v if total_v > 0 else invested
-
-                if not name or qty == 0 or invested == 0:
-                    skipped += 1
-                    continue
-
-                notes = ""
-                if is_usd:
-                    notes = f"Cost ${invested:,.2f} @ USD/INR {usd_inr:.2f}"
-                    if avg_px > 0:
-                        notes += f" | Avg buy ${avg_px:,.2f}"
-                inv = Investment(
-                    name=name, asset_class=asset_class, platform=platform,
-                    invested_amount=round(invested * usd_inr, 2),
-                    current_value=round(current * usd_inr, 2),
-                    units=qty,  # fractional shares preserved exactly
-                    symbol=symbol,
-                    currency="USD" if is_usd else "INR",
-                    fx_rate=usd_inr if is_usd else 0.0,
-                    notes=notes,
-                )
-                db.add(inv)
-                imported += 1
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use groww_stocks, groww_mf, indmoney, or coinswitch")
-
-        db.commit()
-        return {
-            "message": f"Successfully imported {imported} investments ({skipped} rows skipped)",
-            "imported": imported,
-            "skipped": skipped,
-            "broker": broker,
-        }
-
+        return run_broker_import(broker, rows, db)
     except HTTPException:
         raise
     except Exception as e:

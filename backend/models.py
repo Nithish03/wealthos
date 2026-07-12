@@ -68,6 +68,8 @@ class CreditCardTransaction(Base):
     description = Column(String, default="")
     transaction_date = Column(DateTime, default=datetime.utcnow)
     transaction_type = Column(String, default="debit")
+    is_reimbursement = Column(Boolean, default=False)
+    matched_txn_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     card = relationship("CreditCard", back_populates="transactions")
 

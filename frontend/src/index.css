@@ -247,6 +247,16 @@ tbody tr:last-child td { border-bottom: none; }
 .fade-in  { animation: fadeIn  0.3s ease-out; }
 .slide-up { animation: slideUp 0.3s ease-out; }
 
+/* Inline category editor in transaction tables */
+.cat-select {
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  border-radius: 14px !important;
+  width: auto !important;
+  min-width: 96px;
+  background: var(--bg2) !important;
+}
+
 /* ── Category dot colors ─────────────────────────── */
 .cat-food        { color: #f59e0b; }
 .cat-shopping    { color: #a855f7; }

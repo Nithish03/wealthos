@@ -10,12 +10,31 @@ from routers.auth import require_auth
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_auth)])
 
-MONTHLY_SALARY = 100000
+MONTHLY_SALARY = 89200  # in-hand cash (excl. ₹8,800 food card)
 ANNUAL_CTC = 1395565
+
+
+def _auto_snapshot(db: Session):
+    """CR8: first dashboard visit each month records a net-worth snapshot."""
+    now = datetime.utcnow()
+    month_start = datetime(now.year, now.month, 1)
+    if db.query(NetWorthSnapshot).filter(NetWorthSnapshot.snapshot_date >= month_start).first():
+        return
+    investments = db.query(Investment).all()
+    cards = db.query(CreditCard).all()
+    accounts = db.query(BankAccount).all()
+    iv = sum((i.current_value or 0) for i in investments)
+    bb = sum((a.balance or 0) for a in accounts)
+    cd = sum((c.total_due or 0) for c in cards)
+    db.add(NetWorthSnapshot(total_assets=iv + bb, total_liabilities=cd, net_worth=iv + bb - cd,
+                            investment_value=iv, bank_balance=bb, credit_dues=cd,
+                            notes="auto (monthly)"))
+    db.commit()
 
 
 @router.get("/overview")
 def get_overview(db: Session = Depends(get_db)):
+    _auto_snapshot(db)
     investments = db.query(Investment).all()
     cards = db.query(CreditCard).all()
     accounts = db.query(BankAccount).all()

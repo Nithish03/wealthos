@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { creditCardsAPI, pdfImportAPI, withFilePassword, apiErrMsg } from '../api/client'
 import CategoryTrainer from '../components/CategoryTrainer'
+import { CategorySelect, TxnBadges } from '../components/CategoryBits'
 import { AlertTriangle } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import toast from 'react-hot-toast'
@@ -449,12 +450,9 @@ function CardPanel({ card, onEdit, onDelete, onReload }) {
                       <td style={{maxWidth:200}}>
                         <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:13}}>{t.description||'—'}</div>
                       </td>
-                      <td>
-                        <span style={{
-                          display:'inline-block',padding:'2px 8px',borderRadius:20,fontSize:11,fontWeight:600,
-                          background:`${CAT_COLORS[t.category]||'#64748b'}22`,
-                          color:CAT_COLORS[t.category]||'#64748b',
-                        }}>{t.category}</span>
+                      <td style={{whiteSpace:'nowrap'}}>
+                        <CategorySelect source="cc" txn={t} onSaved={()=>{loadTxns();onReload()}} />
+                        <TxnBadges txn={t} />
                       </td>
                       <td style={{textAlign:'right',fontFamily:'monospace',fontWeight:600}}>{fmt(t.amount)}</td>
                       <td>

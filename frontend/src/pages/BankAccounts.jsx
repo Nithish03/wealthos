@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { bankAccountsAPI, pdfImportAPI, withFilePassword, apiErrMsg } from '../api/client'
 import CategoryTrainer from '../components/CategoryTrainer'
+import { CategorySelect, TxnBadges } from '../components/CategoryBits'
 import toast from 'react-hot-toast'
 
 const fmt  = (n) => `₹${Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0})}`
@@ -314,8 +315,9 @@ function TransactionsPanel({ accId }) {
               <td style={{fontSize:12,maxWidth:200}}>
                 <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.description||'—'}</div>
               </td>
-              <td>
-                <span style={{fontSize:11,color:'var(--t2)'}}>{t.category||'Other'}</span>
+              <td style={{whiteSpace:'nowrap'}}>
+                <CategorySelect source="bank" txn={t} onSaved={()=>{}} />
+                <TxnBadges txn={t} />
               </td>
               <td style={{textAlign:'right',fontFamily:'monospace',color:'var(--green)',fontSize:12}}>
                 {t.credit_amount>0 ? fmt(t.credit_amount) : '—'}
