@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+backend/venv/
+backend/.env
+backend/.secret
+
+# Database — personal financial data, never commit
+*.db
+*.db-journal
+
+# Node
+frontend/node_modules/
+# NOTE: frontend/dist IS committed — hosting providers then need no Node.js.
+# Rebuild it after UI changes: cd frontend && npm run build
+
+# Editor / OS
+.DS_Store
+*.swp
